@@ -96,9 +96,8 @@ def create_app() -> FastAPI:
     register_exception_handlers(app)
 
     # ── Routers ───────────────────────────────────────────────────────────
-    # Registered here as modules are implemented in later phases:
-    # from app.modules.identity.routes import router as identity_router
-    # app.include_router(identity_router, prefix="/api/v1")
+    from app.modules.identity.routes import router as identity_router
+    app.include_router(identity_router, prefix="/api/v1")
 
     # ── Health check ──────────────────────────────────────────────────────
     @app.get("/health", tags=["ops"])

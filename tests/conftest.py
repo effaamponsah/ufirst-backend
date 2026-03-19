@@ -1,69 +1,49 @@
 """
 Shared test fixtures.
 
-All tests use real PostgreSQL and Redis via testcontainers — no mocking at the
-infrastructure level. Each test runs inside a transaction that is rolled back
-on teardown, so tests are fully isolated without needing to truncate tables.
+Tests run against the already-running docker-compose services (PostgreSQL +
+Redis). Each test gets a clean database state via table truncation after each
+test. The ASGI app manages its own sessions normally — no session sharing
+between the test framework and the app (avoids asyncpg event-loop conflicts).
+
+Start the services before running tests:
+    docker compose up -d
 """
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncGenerator
-from typing import Generator
 from uuid import uuid4
 
 import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
-    AsyncConnection,
     AsyncSession,
     async_sessionmaker,
     create_async_engine,
 )
-from testcontainers.postgres import PostgresContainer
-from testcontainers.redis import RedisContainer
 
-from app.core.database import Base, get_db
+from app.config import settings
+from app.core.database import Base
 from app.main import app
 
 # ---------------------------------------------------------------------------
-# Container lifecycle — shared across the entire test session
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture(scope="session")
-def postgres_container() -> Generator[PostgresContainer, None, None]:
-    with PostgresContainer("postgres:16-alpine") as pg:
-        yield pg
-
-
-@pytest.fixture(scope="session")
-def redis_container() -> Generator[RedisContainer, None, None]:
-    with RedisContainer("redis:7-alpine") as r:
-        yield r
-
-
-# ---------------------------------------------------------------------------
-# Async engine — session-scoped, created once against the test container
+# Engine — session-scoped, reused for the whole test run
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture(scope="session")
-async def db_engine(postgres_container: PostgresContainer):
-    url = postgres_container.get_connection_url().replace(
-        "postgresql+psycopg2://", "postgresql+asyncpg://"
-    )
-    engine = create_async_engine(url, echo=False)
+async def db_engine():
+    engine = create_async_engine(settings.async_database_url, echo=False)
 
     async with engine.begin() as conn:
-        # Create schemas
-        for schema in ["identity", "wallet", "card", "transaction", "vendor", "compliance", "notification", "reporting"]:
-            await conn.execute(
-                __import__("sqlalchemy").text(f"CREATE SCHEMA IF NOT EXISTS {schema}")
-            )
-        # Create all tables
+        for schema in [
+            "identity", "wallet", "card", "transaction",
+            "vendor", "compliance", "notification", "reporting",
+        ]:
+            await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine
@@ -71,55 +51,39 @@ async def db_engine(postgres_container: PostgresContainer):
 
 
 # ---------------------------------------------------------------------------
-# Per-test transaction rollback — gives each test a clean slate
+# Table cleanup — runs after every test to give the next test a clean slate
+# ---------------------------------------------------------------------------
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def clean_tables(db_engine) -> AsyncGenerator[None, None]:
+    yield
+    async with db_engine.begin() as conn:
+        for table in reversed(Base.metadata.sorted_tables):
+            await conn.execute(table.delete())
+
+
+# ---------------------------------------------------------------------------
+# HTTP test client — the app uses its own DB sessions (no override needed)
 # ---------------------------------------------------------------------------
 
 
 @pytest_asyncio.fixture
-async def db_connection(db_engine) -> AsyncGenerator[AsyncConnection, None]:
-    async with db_engine.connect() as conn:
-        await conn.begin()
-        yield conn
-        await conn.rollback()
-
-
-@pytest_asyncio.fixture
-async def db_session(db_connection: AsyncConnection) -> AsyncGenerator[AsyncSession, None]:
-    session_factory = async_sessionmaker(
-        bind=db_connection,
-        class_=AsyncSession,
-        expire_on_commit=False,
-    )
-    async with session_factory() as session:
-        yield session
-
-
-# ---------------------------------------------------------------------------
-# HTTP test client with auth injection
-# ---------------------------------------------------------------------------
-
-
-@pytest_asyncio.fixture
-async def client(db_session: AsyncSession) -> AsyncGenerator[AsyncClient, None]:
+async def client() -> AsyncGenerator[AsyncClient, None]:
     """
-    HTTP client wired to the FastAPI app with the real DB session injected.
-    Auth uses dev mode tokens: 'dev:<user_id>:<role>'
+    FastAPI test client against the real running database.
+    Auth uses dev-mode tokens: 'Bearer dev:<user_id>:<role>'
     """
-    app.dependency_overrides[get_db] = lambda: db_session  # type: ignore[assignment]
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as ac:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         yield ac
-    app.dependency_overrides.clear()
 
 
 # ---------------------------------------------------------------------------
-# Auth header helpers
+# Auth header helper
 # ---------------------------------------------------------------------------
 
 
 def auth_header(user_id: str, role: str) -> dict[str, str]:
-    """Generate a dev-mode Authorization header."""
     return {"Authorization": f"Bearer dev:{user_id}:{role}"}
 
 

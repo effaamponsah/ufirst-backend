@@ -23,8 +23,8 @@ if alembic_config.config_file_name is not None:
 
 # Import all models so their tables are registered on Base.metadata.
 # Add each module's models here as they are implemented.
-# from app.modules.identity import models as _  # noqa: F401
-# from app.modules.wallet import models as _     # noqa: F401
+from app.modules.identity import models as _identity_models  # noqa: F401
+# from app.modules.wallet import models as _wallet_models   # noqa: F401
 
 target_metadata = Base.metadata
 

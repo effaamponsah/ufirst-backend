@@ -47,33 +47,33 @@ Everything every other module depends on. Must be complete before any module wor
 Owns users, KYC, and sponsor↔beneficiary relationships. All other modules resolve user data through `IdentityService`.
 
 ### 1.1 Database Schema (`identity.*`)
-- [ ] `identity.users` — `id` (UUID, matches Supabase `auth.users.id`), `email`, `phone`, `full_name`, `role`, `kyc_status`, `created_at`
-- [ ] `identity.kyc_submissions` — documents, provider reference, status, reviewer notes
-- [ ] `identity.sponsor_beneficiary_links` — `sponsor_id`, `beneficiary_id`, `status` (ACTIVE/SUSPENDED), `created_at`
-- [ ] Migration: `migrations/identity/001_initial_schema.py`
+- [x] `identity.users` — `id` (UUID, matches Supabase `auth.users.id`), `email`, `phone`, `full_name`, `role`, `kyc_status`, `created_at`
+- [x] `identity.kyc_submissions` — documents, provider reference, status, reviewer notes
+- [x] `identity.sponsor_beneficiary_links` — `sponsor_id`, `beneficiary_id`, `status` (ACTIVE/SUSPENDED), `created_at`
+- [x] Migration: `migrations/versions/20260319_0001_identity_initial_schema.py`
 
 ### 1.2 Service Interface (`app/modules/identity/service.py`)
-- [ ] `get_user(user_id: UUID) -> UserProfile`
-- [ ] `get_link(sponsor_id: UUID, beneficiary_id: UUID) -> SponsorBeneficiaryLink`
-- [ ] `list_beneficiaries(sponsor_id: UUID) -> list[UserProfile]`
-- [ ] `verify_sponsor_beneficiary_link(sponsor_id, beneficiary_id)` — raises if no active link
-- [ ] `update_kyc_status(user_id, status, provider_ref)`
+- [x] `get_user(user_id: UUID) -> UserProfile`
+- [x] `get_link(sponsor_id: UUID, beneficiary_id: UUID) -> SponsorBeneficiaryLink`
+- [x] `list_beneficiaries(sponsor_id: UUID) -> list[UserProfile]`
+- [x] `verify_sponsor_beneficiary_link(sponsor_id, beneficiary_id)` — raises if no active link
+- [x] `update_kyc_status(user_id, status, provider_ref)`
 
 ### 1.3 Routes (`/api/v1/`)
-- [ ] `POST /auth/webhook/user-created` — Supabase `user.created` webhook; verify Supabase webhook signature; create `identity.users` record; publish `UserCreated` event
-- [ ] `GET /users/me` — current user profile
-- [ ] `GET /users/{user_id}` — admin/ops only
-- [ ] `GET /users/me/beneficiaries` — sponsor: list linked beneficiaries
-- [ ] `POST /users/me/beneficiaries/{beneficiary_id}` — create sponsor↔beneficiary link
-- [ ] `DELETE /users/me/beneficiaries/{beneficiary_id}` — deactivate link
-- [ ] `POST /kyc/submit` — submit KYC documents (multipart upload to object storage, store reference)
-- [ ] `GET /kyc/status` — current KYC status for authenticated user
-- [ ] `POST /kyc/webhook` — KYC provider webhook (status update); verify signature
+- [x] `POST /auth/webhook/user-created` — Supabase `user.created` webhook; verify Supabase webhook signature; create `identity.users` record; publish `UserCreated` event
+- [x] `GET /users/me` — current user profile
+- [x] `GET /users/{user_id}` — admin/ops only
+- [x] `GET /users/me/beneficiaries` — sponsor: list linked beneficiaries
+- [x] `POST /users/me/beneficiaries/{beneficiary_id}` — create sponsor↔beneficiary link
+- [x] `DELETE /users/me/beneficiaries/{beneficiary_id}` — deactivate link
+- [x] `POST /kyc/submit` — submit KYC documents (multipart upload to object storage, store reference)
+- [x] `GET /kyc/status` — current KYC status for authenticated user
+- [x] `POST /kyc/webhook` — KYC provider webhook (status update); verify signature
 
 ### 1.4 Events
-- [ ] `UserCreated(user_id, role, email)`
-- [ ] `KYCStatusChanged(user_id, old_status, new_status)`
-- [ ] `SponsorBeneficiaryLinked(sponsor_id, beneficiary_id)`
+- [x] `UserCreated(user_id, role, email)`
+- [x] `KYCStatusChanged(user_id, old_status, new_status)`
+- [x] `SponsorBeneficiaryLinked(sponsor_id, beneficiary_id)`
 
 ---
 
