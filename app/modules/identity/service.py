@@ -104,6 +104,9 @@ class IdentityService:
     # ------------------------------------------------------------------
 
     async def list_beneficiaries(self, sponsor_id: UUID) -> list[UserProfile]:
+        caller = await repo.get_user(self._session, sponsor_id)
+        if caller is None or caller.role != UserRole.SPONSOR:
+            raise PermissionDenied("Only sponsors can list beneficiaries.")
         users = await repo.list_beneficiaries(self._session, sponsor_id)
         return [UserProfile.model_validate(u) for u in users]
 
@@ -139,6 +142,9 @@ class IdentityService:
     async def remove_beneficiary_link(
         self, sponsor_id: UUID, beneficiary_id: UUID
     ) -> None:
+        caller = await repo.get_user(self._session, sponsor_id)
+        if caller is None or caller.role != UserRole.SPONSOR:
+            raise PermissionDenied("Only sponsors can remove beneficiary links.")
         link = await repo.get_link(self._session, sponsor_id, beneficiary_id)
         if link is None or link.status == LinkStatus.SUSPENDED:
             raise NotFound("Active link not found.")

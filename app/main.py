@@ -97,7 +97,9 @@ def create_app() -> FastAPI:
 
     # ── Routers ───────────────────────────────────────────────────────────
     from app.modules.identity.routes import router as identity_router
+    from app.modules.wallet.routes import router as wallet_router
     app.include_router(identity_router, prefix="/api/v1")
+    app.include_router(wallet_router, prefix="/api/v1")
 
     # ── Health check ──────────────────────────────────────────────────────
     @app.get("/health", tags=["ops"])

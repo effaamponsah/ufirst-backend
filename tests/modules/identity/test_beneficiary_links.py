@@ -106,3 +106,52 @@ async def test_non_sponsor_cannot_link(client: AsyncClient) -> None:
         headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
     )
     assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_beneficiary_cannot_list_beneficiaries(client: AsyncClient) -> None:
+    beneficiary_id = await _create_user(client, "beneficiary")
+
+    resp = await client.get(
+        "/api/v1/users/me/beneficiaries",
+        headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_beneficiary_cannot_remove_beneficiary_link(client: AsyncClient) -> None:
+    sponsor_id = await _create_user(client, "sponsor")
+    beneficiary_id = await _create_user(client, "beneficiary")
+    target_id = await _create_user(client, "beneficiary")
+
+    # Sponsor creates the link first
+    await client.post(
+        f"/api/v1/users/me/beneficiaries/{beneficiary_id}",
+        headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
+    )
+
+    # Beneficiary tries to delete — must be rejected
+    resp = await client.delete(
+        f"/api/v1/users/me/beneficiaries/{target_id}",
+        headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
+    )
+    assert resp.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_sponsor_list_and_remove_happy_path(client: AsyncClient) -> None:
+    sponsor_id = await _create_user(client, "sponsor")
+    beneficiary_id = await _create_user(client, "beneficiary")
+    headers = {"Authorization": f"Bearer dev:{sponsor_id}:sponsor"}
+
+    await client.post(f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers)
+
+    list_resp = await client.get("/api/v1/users/me/beneficiaries", headers=headers)
+    assert list_resp.status_code == 200
+    assert any(u["id"] == beneficiary_id for u in list_resp.json())
+
+    del_resp = await client.delete(
+        f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers
+    )
+    assert del_resp.status_code == 204

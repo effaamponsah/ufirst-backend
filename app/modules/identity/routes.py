@@ -118,7 +118,7 @@ async def get_user(
 # ---------------------------------------------------------------------------
 
 
-@router.get("/users/me/beneficiaries")
+@router.get("/users/me/beneficiaries", dependencies=[Depends(require_roles("sponsor"))])
 async def list_beneficiaries(
     current_user: CurrentUser = Depends(get_current_user),
     service: IdentityService = Depends(_get_service),
@@ -126,7 +126,11 @@ async def list_beneficiaries(
     return await service.list_beneficiaries(current_user.id)
 
 
-@router.post("/users/me/beneficiaries/{beneficiary_id}", status_code=201)
+@router.post(
+    "/users/me/beneficiaries/{beneficiary_id}",
+    status_code=201,
+    dependencies=[Depends(require_roles("sponsor"))],
+)
 async def link_beneficiary(
     beneficiary_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),
@@ -135,7 +139,11 @@ async def link_beneficiary(
     return await service.link_beneficiary(current_user.id, beneficiary_id)
 
 
-@router.delete("/users/me/beneficiaries/{beneficiary_id}", status_code=204)
+@router.delete(
+    "/users/me/beneficiaries/{beneficiary_id}",
+    status_code=204,
+    dependencies=[Depends(require_roles("sponsor"))],
+)
 async def remove_beneficiary(
     beneficiary_id: UUID,
     current_user: CurrentUser = Depends(get_current_user),

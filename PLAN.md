@@ -82,29 +82,34 @@ Owns users, KYC, and sponsor↔beneficiary relationships. All other modules reso
 Owns wallets and the append-only ledger. The financial core of the system.
 
 ### 2.1 Database Schema (`wallet.*`)
-- [ ] `wallet.wallets` — `id`, `owner_id` (user UUID), `currency`, `available_balance` (int), `reserved_balance` (int), `status`
-- [ ] `wallet.ledger_entries` — `id`, `wallet_id`, `entry_type` (DEBIT/CREDIT), `amount` (int), `currency`, `reference_type`, `reference_id`, `description`, `created_at` — **NO `updated_at`, no UPDATE, no DELETE**
-- [ ] `wallet.funding_transfers` — `id`, `sponsor_id`, `wallet_id`, `payment_method` (ENUM), `payment_state` (ENUM), `payment_state_changed_at`, `source_amount`, `source_currency`, `fx_rate`, `fx_rate_locked_until`, `dest_amount`, `dest_currency`, `fee_amount`, `idempotency_key`, `external_payment_ref`, `created_at`
-- [ ] Migration: `migrations/wallet/001_initial_schema.py`
+- [x] `wallet.wallets` — `id`, `owner_id` (user UUID), `currency`, `available_balance` (int), `reserved_balance` (int), `status`
+- [x] `wallet.ledger_entries` — `id`, `wallet_id`, `entry_type` (DEBIT/CREDIT), `amount` (int), `currency`, `reference_type`, `reference_id`, `description`, `created_at` — **NO `updated_at`, no UPDATE, no DELETE**
+- [x] `wallet.funding_transfers` — `id`, `sponsor_id`, `wallet_id`, `payment_method` (ENUM), `payment_state` (ENUM), `payment_state_changed_at`, `source_amount`, `source_currency`, `fx_rate`, `fx_rate_locked_until`, `dest_amount`, `dest_currency`, `fee_amount`, `idempotency_key`, `external_payment_ref`, `created_at`
+- [x] Migration: `migrations/versions/20260319_0002_wallet_initial_schema.py`
 
 ### 2.2 Service Interface (`app/modules/wallet/service.py`)
-- [ ] `get_wallet(wallet_id: UUID) -> WalletBalance`
-- [ ] `get_wallet_for_user(user_id: UUID) -> WalletBalance`
-- [ ] `create_wallet(user_id: UUID, currency: str) -> Wallet`
-- [ ] `credit_from_funding(funding_transfer_id: UUID)` — SERIALIZABLE transaction: double-entry ledger + balance update
-- [ ] `debit_for_transaction(wallet_id, amount, reference)` — for card authorizations
-- [ ] `get_ledger(wallet_id, page, per_page) -> PaginatedResponse[LedgerEntry]`
-- [ ] `check_idempotency(idempotency_key: str) -> FundingTransfer | None`
+- [x] `get_wallet(wallet_id: UUID) -> WalletResponse`
+- [x] `get_wallet_by_owner(owner_id: UUID) -> WalletResponse`
+- [x] `create_wallet(owner_id: UUID, currency: str) -> WalletResponse`
+- [x] `credit_from_funding(transfer_id: UUID)` — SERIALIZABLE transaction: ledger credit + balance update + state → COMPLETED
+- [x] `debit_wallet(wallet_id, amount, reference_type, reference_id)` — for card authorizations
+- [x] `get_ledger(wallet_id, limit, offset) -> list[LedgerEntryResponse]`
+- [x] `initiate_funding(...)` — idempotency check, wallet validation, create FundingTransfer
+- [x] `advance_funding_state(transfer_id, new_state)` — enforces valid state transitions
 
-### 2.3 Routes (`/api/v1/wallets/`)
-- [ ] `GET /wallets/me` — sponsor: own wallet balance
-- [ ] `GET /wallets/{wallet_id}` — sponsor sees beneficiary wallet; ops sees any
-- [ ] `GET /wallets/{wallet_id}/ledger` — paginated ledger entries
+### 2.3 Routes (`/api/v1/`)
+- [x] `GET /wallets/me` — own wallet balance
+- [x] `GET /wallets/{wallet_id}` — admin/ops/compliance only
+- [x] `GET /wallets/me/ledger` — paginated ledger entries
+- [x] `POST /funding/initiate` — create funding transfer
+- [x] `GET /funding/{transfer_id}` — get transfer status
+- [x] `PATCH /funding/{transfer_id}/state` — admin/ops: advance state machine
+- [x] `POST /funding/{transfer_id}/complete` — admin/ops: credit wallet (for testing/manual ops)
 
 ### 2.4 Events
-- [ ] `WalletCreated(wallet_id, owner_id, currency)`
-- [ ] `WalletFunded(wallet_id, amount, currency, funding_transfer_id)`
-- [ ] `WalletDebited(wallet_id, amount, reference_type, reference_id)`
+- [x] `WalletCreated(wallet_id, owner_id, currency)`
+- [x] `WalletFunded(wallet_id, amount, currency, funding_transfer_id)`
+- [x] `WalletDebited(wallet_id, amount, currency, reference_type, reference_id)`
 
 ---
 

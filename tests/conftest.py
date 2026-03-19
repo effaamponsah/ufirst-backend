@@ -29,6 +29,11 @@ from app.config import settings
 from app.core.database import Base
 from app.main import app
 
+# Tests always use dev-mode tokens ("Bearer dev:<user_id>:<role>").
+# Force this regardless of what the local .env file says so the suite never
+# accidentally depends on a real Supabase JWT secret being present.
+settings.dev_mode = True
+
 # ---------------------------------------------------------------------------
 # Engine — session-scoped, reused for the whole test run
 # ---------------------------------------------------------------------------
