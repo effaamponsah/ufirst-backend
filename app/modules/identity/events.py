@@ -10,7 +10,7 @@ from app.modules.identity.models import KYCStatus, UserRole
 class UserCreated(BaseModel):
     user_id: UUID
     role: UserRole
-    email: str
+    email: str | None
 
 
 class KYCStatusChanged(BaseModel):

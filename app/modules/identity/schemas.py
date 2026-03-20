@@ -12,11 +12,13 @@ class UserProfile(BaseModel):
     model_config = {"from_attributes": True}
 
     id: UUID
-    email: str
+    email: str | None
     phone: str | None
     full_name: str | None
     role: UserRole
     kyc_status: KYCStatus
+    country: str | None
+    beneficiary_relationship: str | None
     created_at: datetime
 
 
@@ -40,23 +42,21 @@ class KYCSubmissionResponse(BaseModel):
     created_at: datetime
 
 
-# ---------------------------------------------------------------------------
-# Supabase webhook payload (user.created)
-# ---------------------------------------------------------------------------
+class CompleteProfileRequest(BaseModel):
+    """Payload for POST /onboarding/complete-profile."""
 
-
-class SupabaseUserRecord(BaseModel):
-    id: UUID
-    email: str | None = None
+    email: str | None = None            # Required for phone-OTP signups with no email in JWT
+    country: str | None = None          # ISO 3166-1 alpha-2, e.g. "GB"
     phone: str | None = None
-    raw_app_meta_data: dict = {}
-    raw_user_meta_data: dict = {}
+    full_name: str | None = None
+    beneficiary_relationship: str | None = None  # e.g. "spouse", "parent", "sibling"
 
 
-class SupabaseWebhookPayload(BaseModel):
-    model_config = {"populate_by_name": True}
+class CreateBeneficiaryRequest(BaseModel):
+    """Payload for POST /users/me/beneficiaries — sponsor creates a beneficiary."""
 
-    type: str        # INSERT | UPDATE | DELETE
-    table: str       # users
-    db_schema: str = ""   # "auth" — renamed to avoid clash with Pydantic's BaseModel.schema
-    record: SupabaseUserRecord
+    full_name: str
+    phone: str
+    country: str                         # ISO 3166-1 alpha-2, e.g. "NG"
+    beneficiary_relationship: str        # e.g. "spouse", "parent", "sibling"
+    email: str | None = None

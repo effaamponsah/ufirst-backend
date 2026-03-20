@@ -76,7 +76,7 @@ class CurrentUser:
 # ---------------------------------------------------------------------------
 
 
-def _verify_token(token: str) -> CurrentUser:
+def verify_token(token: str) -> CurrentUser:
     # ── Dev mode shortcut ─────────────────────────────────────────────────
     if settings.dev_mode and token.startswith("dev:"):
         parts = token.split(":")
@@ -147,7 +147,7 @@ async def get_current_user(
     if credentials is None:
         raise HTTPException(status_code=401, detail={"code": "AUTHENTICATION_REQUIRED", "message": "Missing Authorization header."})
     try:
-        return _verify_token(credentials.credentials)
+        return verify_token(credentials.credentials)
     except AuthenticationError as exc:
         raise HTTPException(status_code=401, detail={"code": exc.code, "message": exc.message})
 

@@ -118,75 +118,61 @@ Owns wallets and the append-only ledger. The financial core of the system.
 The primary funding mechanism. Lives entirely within `app/modules/wallet/openbanking/`.
 
 ### 3.1 Aggregator Client (`openbanking/client.py`)
-- [ ] Abstract `PaymentAdapter` interface: `initiate(...)`, `check_status(payment_id)`, `handle_webhook(payload, headers)`, `refund(payment_id, amount)`
-- [ ] `TrueLayerClient(PaymentAdapter)` — all TrueLayer API calls, auth (client credentials OAuth), retries with exponential backoff, error mapping to internal exceptions
-- [ ] `OpenBankingMapper` — maps TrueLayer response fields to internal models; isolates any future provider switch to this file only
-- [ ] Aggregator resolved at runtime from `settings.OPENBANKING_PROVIDER` — `TrueLayerClient` is the Phase 1 implementation
+- [x] Abstract `PaymentAdapter` interface: `initiate(...)`, `check_status(payment_id)`, `verify_webhook(body, headers)`, `parse_webhook(body)`, `refund(payment_id, amount)`
+- [x] `TrueLayerClient(PaymentAdapter)` — all TrueLayer API calls, auth (client credentials OAuth), retries with exponential backoff, error mapping to internal exceptions
+- [x] `OpenBankingMapper` — maps TrueLayer response fields to internal models; isolates any future provider switch to this file only
+- [x] `StripeClient(PaymentAdapter)` — card fallback adapter (Phase 3.8)
+- [x] `DevPaymentAdapter` — no-op stub returned by factory when credentials are absent
+- [x] Aggregator resolved at runtime from `settings.OPENBANKING_PROVIDER` via `get_adapter()` factory
 
 ### 3.2 Database Schema Additions (`wallet.*`)
-- [ ] `wallet.sponsor_bank_connections` — all columns per addendum §4.2.1; `account_identifier_encrypted` as `BYTEA` (AES-256-GCM)
-- [ ] `wallet.open_banking_payments` — all columns per addendum §4.2.2
-- [ ] `wallet.open_banking_webhooks_log` — raw payload audit log (`id`, `aggregator`, `event_type`, `payload` JSONB, `signature_valid`, `processed_at`, `processing_error`)
-- [ ] Migration: `migrations/wallet/002_open_banking.py`
+- [x] `wallet.sponsor_bank_connections` — all columns; `account_identifier_encrypted` as `BYTEA` (AES-256-GCM)
+- [x] `wallet.open_banking_payments` — links FundingTransfer to aggregator payment record
+- [x] `wallet.open_banking_webhooks_log` — raw payload audit log (`id`, `aggregator`, `event_type`, `payload` JSONB, `signature_valid`, `processed_at`, `processing_error`)
+- [x] `wallet.card_payments` — Stripe `payment_intent_id`, card last4, card brand, fee charged
+- [x] Migration: `migrations/versions/20260319_0006_wallet_open_banking.py`
+- [x] Migration: `migrations/versions/20260319_0007_wallet_card_payments.py`
 
 ### 3.3 State Machine (`openbanking/payments.py`)
-- [ ] `FundingStateMachine` — enforces valid transitions per addendum §3.3:
+- [x] `PaymentInitiationService.initiate_payment(...)` enforces valid transitions:
   - `INITIATED → AWAITING_AUTHORIZATION | FAILED`
   - `AWAITING_AUTHORIZATION → AUTHORIZING | EXPIRED | CANCELLED`
   - `AUTHORIZING → AWAITING_SETTLEMENT | FAILED`
   - `AWAITING_SETTLEMENT → COMPLETED | FAILED`
   - Terminal states (`COMPLETED`, `FAILED`, `EXPIRED`, `CANCELLED`) raise on any transition attempt
-- [ ] `PaymentInitiationService.initiate_payment(sponsor_id, wallet_id, amount, currency, idempotency_key) -> FundingInitiateResult`
-  1. `IdentityService.verify_sponsor_beneficiary_link()`
-  2. `ComplianceService.screen_funding()` — AML/velocity/sanctions check before calling aggregator
-  3. Lock FX rate (fetch from Redis cache, store rate + `fx_rate_locked_until = now + 120s`)
-  4. Create `funding_transfer` record (`state=INITIATED`)
-  5. Call `aggregator.initiate()` → get `payment_id` + `auth_link`
-  6. Create `open_banking_payments` record
-  7. Transition state to `AWAITING_AUTHORIZATION`
-  8. Publish `FundingInitiated` event
-  9. Return `auth_link` to caller
+- [x] Full initiation flow: link verification → compliance stub → FX rate lock → create FundingTransfer → call adapter → create OB/card payment record → advance to AWAITING_AUTHORIZATION → publish FundingInitiated
 
 ### 3.4 Webhook Handler (`openbanking/webhooks.py`)
-- [ ] `POST /api/v1/webhooks/openbanking/payment-status`
-  1. Verify aggregator HMAC-SHA256 signature (reject unsigned with 401)
-  2. Check webhook timestamp — reject if older than 5 minutes (replay prevention)
-  3. Persist raw payload to `open_banking_webhooks_log`
-  4. Deduplicate by `(aggregator_payment_id, bank_status)` — return 200 if already processed
-  5. Dispatch to `critical` Celery queue — return 200 immediately
-- [ ] `POST /api/v1/webhooks/openbanking/connect-callback`
-  - Same verification + deduplication pattern, dispatch to `default` queue
-- [ ] Celery task `process_payment_webhook(payload)`:
-  - Look up `open_banking_payments` by `aggregator_payment_id`
-  - On `EXECUTED`: call `WalletService.credit_from_funding()` in SERIALIZABLE transaction; transition to `COMPLETED`; publish `FundingPaymentReceived`
-  - On `REJECTED`: transition to `FAILED`; store `failure_reason`; publish `FundingFailed`
-  - On `PENDING`: update `payment_state` to `AWAITING_SETTLEMENT`; no wallet credit yet
+- [x] `POST /api/v1/webhooks/openbanking/payment-status` — verify HMAC-SHA256 signature → replay prevention → log to webhooks_log → dispatch to Celery critical queue → return 200
+- [x] `POST /api/v1/webhooks/openbanking/connect-callback` — same pattern, default queue
+- [x] `POST /api/v1/webhooks/stripe/payment-status` — Stripe-Signature verification → log → dispatch
+- [x] Celery task `process_payment_webhook(payload, aggregator)` — handles payment_executed/failed/pending; advances state machine; credits wallet on executed
 
 ### 3.5 Bank Connection Flow (`openbanking/connections.py`)
-- [ ] `BankConnectionService.create_connection_session(sponsor_id) -> str` — calls aggregator, returns `auth_link`
-- [ ] `BankConnectionService.complete_connection(sponsor_id, aggregator_result)` — store encrypted bank metadata in `sponsor_bank_connections`
-- [ ] `BankConnectionService.revoke_connection(connection_id, sponsor_id)` — revoke AIS consent with aggregator, mark REVOKED
-- [ ] `GET /api/v1/funding/banks` — list sponsor's linked bank accounts
-- [ ] `POST /api/v1/funding/banks/link` — start bank link session
-- [ ] `DELETE /api/v1/funding/banks/{connection_id}` — revoke connection
+- [x] `BankConnectionService.create_connection_session(sponsor_id) -> StartBankLinkResponse`
+- [x] `BankConnectionService.complete_connection(sponsor_id, code)` — stores AES-256-GCM encrypted account identifier
+- [x] `BankConnectionService.revoke_connection(connection_id, sponsor_id)` — best-effort aggregator revoke, marks REVOKED locally
+- [x] `GET /api/v1/funding/banks` — list sponsor's active linked bank accounts
+- [x] `POST /api/v1/funding/banks/link` — start bank link session
+- [x] `POST /api/v1/funding/banks/complete` — complete bank link after sponsor redirect
+- [x] `DELETE /api/v1/funding/banks/{connection_id}` — revoke connection
 
 ### 3.6 Funding Endpoints
-- [ ] `POST /api/v1/funding/initiate` — `Idempotency-Key` required; runs initiation flow; returns `{ auth_link, funding_transfer_id }`
-- [ ] `GET /api/v1/funding/{transfer_id}/status` — polled by frontend; returns current `payment_state`
-- [ ] `POST /api/v1/funding/{transfer_id}/cancel` — cancel if state is `AWAITING_AUTHORIZATION`
+- [x] `POST /api/v1/funding/initiate` — `Idempotency-Key` required; runs initiation flow; returns `{ auth_link, funding_transfer_id, payment_state }`
+- [x] `GET /api/v1/funding/{transfer_id}/status` — polled by frontend; returns current `payment_state`
+- [x] `POST /api/v1/funding/{transfer_id}/cancel` — cancel if state is `AWAITING_AUTHORIZATION`
 
 ### 3.7 Safety Net & Expiry (Celery Beat Jobs)
-- [ ] **Poller** (every 5 min): query `funding_transfers` in `AWAITING_SETTLEMENT` where `webhook_received_at IS NULL` and `created_at > 5 min ago`; call `aggregator.check_status()`; process via same handler as webhooks
-- [ ] **Expiry** (every 1 min): query `AWAITING_AUTHORIZATION` where `payment_state_changed_at < now - 15 min`; transition to `EXPIRED`; publish `FundingAuthorizationExpired`
-- [ ] **Consent expiry warning** (daily): query `sponsor_bank_connections` where `consent_expires_at < now + 7 days`; publish `BankConsentExpiring`
-- [ ] **FX rate expiry**: if `AWAITING_SETTLEMENT` payment completes after `fx_rate_locked_until`, re-quote rate at settlement time; log the difference
+- [x] **Poller** (every 5 min): query `AWAITING_SETTLEMENT` transfers with no webhook; call `aggregator.check_status()`
+- [x] **Expiry** (every 1 min): query `AWAITING_AUTHORIZATION` where `payment_state_changed_at < now - 15 min`; transition to `EXPIRED`; publish `FundingAuthorizationExpired`
+- [x] **Consent expiry warning** (daily 08:00 UTC): query `sponsor_bank_connections` where `consent_expires_at < now + 7 days`; publish `BankConsentExpiring`
+- [ ] **FX rate expiry**: re-quote rate at settlement time if `fx_rate_locked_until` has passed; log the difference
 
 ### 3.8 Card Payment Adapter (Fallback)
-- [ ] `StripeClient(PaymentAdapter)` — Stripe PaymentIntent for debit/credit card
-- [ ] `wallet.card_payments` table — Stripe `payment_intent_id`, card last4, card brand, fee charged
-- [ ] Migration: `migrations/wallet/003_card_payments.py`
-- [ ] `POST /api/v1/webhooks/stripe/payment-status` — verify Stripe webhook signature; dispatch to `critical` queue
-- [ ] Routing logic in `PaymentInitiationService`: default to open banking for UK/EU sponsors; fall back to card if sponsor's country is not UK/EU or if they select card explicitly
+- [x] `StripeClient(PaymentAdapter)` — Stripe PaymentIntent for debit/credit card funding
+- [x] `wallet.card_payments` table — Stripe `payment_intent_id`, card last4, card brand, fee charged
+- [x] `POST /api/v1/webhooks/stripe/payment-status` — verify Stripe webhook signature; dispatch to `critical` queue
+- [x] Routing logic in `PaymentInitiationService`: OPEN_BANKING → TrueLayerClient; CARD → StripeClient; ACH/MOBILE_MONEY stubs
 
 ---
 
@@ -195,31 +181,34 @@ The primary funding mechanism. Lives entirely within `app/modules/wallet/openban
 Owns card lifecycle and processor token management. Never stores raw PANs.
 
 ### 4.1 Database Schema (`card.*`)
-- [ ] `card.cards` — `id`, `wallet_id`, `owner_id` (beneficiary), `processor_token` (NOT a PAN), `card_program_id`, `status` (ENUM: PENDING/ACTIVE/FROZEN/CANCELLED), `spending_controls` (JSONB — categories, daily limit, merchant allowlist), `issued_at`, `expires_at`
-- [ ] `card.card_events` — append-only audit log of every card status change
-- [ ] Migration: `migrations/card/001_initial_schema.py`
+- [x] `card.cards` — `id`, `wallet_id`, `owner_id` (beneficiary), `processor_token` (NOT a PAN), `card_program_id`, `status` (PENDING/ACTIVE/FROZEN/CANCELLED), `spending_controls` (JSONB), `issued_at`, `expires_at`
+- [x] `card.card_events` — append-only audit log of every card status change
+- [x] Migration: `migrations/versions/20260319_0008_card_initial_schema.py`
 
-### 4.2 Service Interface
-- [ ] `CardService.issue_card(wallet_id, beneficiary_id) -> Card` — call processor API; store token only; never log or return raw PAN
-- [ ] `CardService.get_card(card_id) -> Card`
-- [ ] `CardService.freeze_card(card_id, reason)`
-- [ ] `CardService.unfreeze_card(card_id)`
-- [ ] `CardService.cancel_card(card_id, reason)`
-- [ ] `CardService.update_spending_controls(card_id, controls: SpendingControls)`
-- [ ] `CardService.get_card_for_wallet(wallet_id) -> Card | None`
+### 4.2 Service Interface (`app/modules/card/service.py`)
+- [x] `CardService.issue_card(wallet_id, beneficiary_id, issued_by, spending_controls) -> CardResponse` — calls processor; card starts PENDING; never logs/returns raw PAN
+- [x] `CardService.activate_card(card_id, actor_id)` — PENDING → ACTIVE; called when UP Nigeria confirms physical card dispatched
+- [x] `CardService.get_card(card_id) -> CardResponse`
+- [x] `CardService.freeze_card(card_id, actor_id, reason)`
+- [x] `CardService.unfreeze_card(card_id, actor_id)`
+- [x] `CardService.cancel_card(card_id, actor_id, reason)`
+- [x] `CardService.update_spending_controls(card_id, controls, actor_id)`
+- [x] `CardService.get_card_for_wallet(wallet_id) -> CardResponse | None`
 
 ### 4.3 Routes (`/api/v1/cards/`)
-- [ ] `POST /cards/` — sponsor issues card for linked beneficiary; checks KYC status via `IdentityService`
-- [ ] `GET /cards/{card_id}` — sponsor or beneficiary owner
-- [ ] `POST /cards/{card_id}/freeze`
-- [ ] `POST /cards/{card_id}/unfreeze`
-- [ ] `DELETE /cards/{card_id}` — cancel card
-- [ ] `PUT /cards/{card_id}/controls` — update spending controls (sponsor only)
+- [x] `POST /cards/` — sponsor issues card for linked beneficiary; checks KYC status via `IdentityService`; card starts PENDING
+- [x] `POST /cards/{card_id}/activate` — ops/admin: activate PENDING card (UP Nigeria dispatch confirmation)
+- [x] `GET /cards/{card_id}` — sponsor or beneficiary owner
+- [x] `POST /cards/{card_id}/freeze`
+- [x] `POST /cards/{card_id}/unfreeze`
+- [x] `DELETE /cards/{card_id}` — cancel card
+- [x] `PUT /cards/{card_id}/controls` — update spending controls (sponsor only)
 
-### 4.4 Processor Client (`card/processor/client.py`)
-- [ ] `CardProcessorClient.issue_card(beneficiary_id, wallet_id) -> ProcessorToken`
-- [ ] `CardProcessorClient.update_card_status(token, status)`
-- [ ] `CardProcessorClient.update_spending_controls(token, controls)`
+### 4.4 Processor Client (`card/processor/`)
+- [x] `CardProcessorClient` abstract interface: `issue_card(...)`, `activate_card(...)`, `update_card_status(...)`, `update_spending_controls(...)`
+- [x] `DevCardProcessorClient` — no-op stub; used when `UP_NIGERIA_API_KEY` is not set
+- [x] `UPNigeriaClient` skeleton (`card/processor/up_nigeria.py`) — clearly marked integration points; wired in automatically when `UP_NIGERIA_API_KEY` is configured
+- [x] `get_processor()` factory — returns `UPNigeriaClient` when credentials present, `DevCardProcessorClient` otherwise
 
 ---
 
@@ -336,14 +325,14 @@ Internal only — no public API. Purely event-driven.
 
 ### 8.3 Templates — one per notification type
 - [ ] Funding: `COMPLETE_BANK_AUTH`, `PAYMENT_PROCESSING`, `WALLET_FUNDED`, `PAYMENT_FAILED`, `AUTH_EXPIRED`
-- [ ] Card: `CARD_ISSUED`, `CARD_FROZEN`, `CARD_TRANSACTION` (per-transaction receipt)
+- [ ] Card: `CARD_ISSUED`, `CARD_ACTIVATED`, `CARD_FROZEN`, `CARD_TRANSACTION` (per-transaction receipt)
 - [ ] KYC: `KYC_SUBMITTED`, `KYC_APPROVED`, `KYC_REJECTED`
 - [ ] Bank connections: `BANK_LINKED`, `BANK_CONSENT_EXPIRING`, `BANK_DISCONNECTED`
 - [ ] Compliance: `ACCOUNT_SUSPENDED`, `SAR_FILED` (ops only)
 
 ### 8.4 Event Subscriptions
 - [ ] Subscribe to: `WalletFunded`, `FundingInitiated`, `FundingAuthorizationExpired`, `FundingFailed`, `FundingPaymentReceived`
-- [ ] Subscribe to: `CardIssued`, `CardFrozen`, `CardTransactionAuthorized`, `CardTransactionDeclined`
+- [ ] Subscribe to: `CardIssued`, `CardActivated`, `CardFrozen`, `CardTransactionAuthorized`, `CardTransactionDeclined`
 - [ ] Subscribe to: `KYCStatusChanged`, `BankConnectionCreated`, `BankConsentExpiring`
 
 ---
@@ -376,23 +365,28 @@ Analytics and three-way reconciliation. Admin/ops API.
 ## Phase 10 — Testing
 
 ### 10.1 Infrastructure
-- [ ] `conftest.py` — `pytest-asyncio` setup; testcontainers PostgreSQL + Redis fixtures; async DB session fixture; `test_user` factory fixtures (sponsor, beneficiary, vendor)
-- [ ] `TestClient` with injected auth token (bypass JWKS for tests)
-- [ ] Async database rollback isolation per test (wrap each test in a transaction that rolls back)
+- [x] `conftest.py` — `pytest-asyncio` setup; real PostgreSQL + Redis fixtures; async DB session; dev-mode auth bypass
+- [x] `TestClient` with injected auth token (dev-mode `Bearer dev:<user_id>:<role>` scheme)
+- [ ] Async database rollback isolation per test (currently uses table truncation; switch to per-test transaction rollback)
 
 ### 10.2 Unit Tests
-- [ ] Funding state machine: every valid transition; every invalid transition raises
+- [x] Funding state machine: valid transitions tested; invalid transitions raise `InvalidStateTransition`
+- [x] Card state machine: valid transitions (PENDING→ACTIVE→FROZEN→ACTIVE→CANCELLED); invalid transitions raise
+- [x] Idempotency: duplicate `Idempotency-Key` returns cached response; conflict on different params raises
+- [x] Webhook signature verification: valid, invalid, missing header (identity KYC webhook)
+- [x] Ledger balance consistency: `sum(credits) - sum(debits) == available_balance` asserted in every financial test
 - [ ] FX rate locking: expiry detection, re-quote on late settlement
-- [ ] Idempotency: duplicate `Idempotency-Key` returns cached response
-- [ ] Webhook signature verification: valid, invalid, expired timestamp, missing header
-- [ ] Ledger balance consistency: sum(debits) == sum(credits) for every financial test case
 - [ ] Money type: rejects float, correct minor-unit arithmetic
 
 ### 10.3 Integration Tests (per module)
-- [ ] `tests/modules/identity/test_user_creation.py` — Supabase webhook → user created
-- [ ] `tests/modules/wallet/test_fund_wallet.py` — full open banking happy path against real DB
-- [ ] `tests/modules/wallet/test_webhook_idempotency.py` — duplicate webhook, out-of-order, replay
-- [ ] `tests/modules/wallet/test_state_machine.py` — every branch of the state machine with real DB transitions
+- [x] `tests/modules/identity/test_user_creation.py` — lazy provisioning, profile update, beneficiary creation
+- [x] `tests/modules/identity/test_beneficiary_links.py` — link creation, list, removal
+- [x] `tests/modules/identity/test_webhook_security.py` — KYC webhook signature verification
+- [x] `tests/modules/wallet/test_fund_wallet.py` — full funding happy path, idempotency, state machine, concurrent race
+- [x] `tests/modules/wallet/test_wallet_creation.py` — wallet creation, auth guards
+- [x] `tests/modules/card/test_card_lifecycle.py` — issue, activate, freeze, unfreeze, cancel, spending controls, KYC gate, unlinked sponsor blocked
+- [ ] `tests/modules/wallet/test_webhook_idempotency.py` — duplicate webhook, out-of-order, replay prevention
+- [ ] `tests/modules/wallet/test_state_machine.py` — every branch of the funding state machine with real DB
 - [ ] `tests/modules/transaction/test_authorization.py` — authorize, clear, reverse
 - [ ] `tests/modules/compliance/test_screening.py` — velocity rules, sanctions match, AML flag
 

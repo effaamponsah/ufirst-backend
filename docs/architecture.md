@@ -17,7 +17,7 @@ Each module is a bounded context with its own DB schema, service interface, and 
 
 | Module | Owns | Key API endpoints |
 |--------|------|-------------------|
-| identity | Users, KYC, sponsor-beneficiary links | /auth/*, /users/*, /kyc/* |
+| identity | Users, KYC, sponsor-beneficiary links | /auth/*, /users/*, /users/me/beneficiaries, /kyc/*, /onboarding/complete-profile |
 | wallet | Wallets, ledger, funding transfers, bank connections | /wallets/*, /funding/* |
 | card | Card lifecycle, processor tokens | /cards/* |
 | transaction | Authorizations, clearings, disputes | /transactions/* |
@@ -32,7 +32,8 @@ Each module is a bounded context with its own DB schema, service interface, and 
 - Backend verifies JWTs locally using Supabase's JWKS endpoint (cached, no per-request call)
 - `auth.users.id` (UUID from Supabase) is the canonical user identifier across all backend schemas
 - Roles stored in Supabase `app_metadata.role`: sponsor, beneficiary, vendor_admin, vendor_cashier, ops_agent, compliance_officer, admin
-- On `user.created` webhook from Supabase → backend creates matching `identity.users` record
+- Backend uses lazy provisioning: auth middleware checks if `identity.users` exists for the JWT's `sub` claim on every request. If missing, creates a skeleton record from JWT claims (UUID, email, role). Frontend then calls `POST /onboarding/complete-profile` to fill in country, phone, and relationship data. No webhook dependency.
+- **Beneficiary provisioning**: Sponsors create beneficiary accounts via `POST /users/me/beneficiaries` — the backend generates a UUID and creates the `identity.users` record directly. Beneficiaries do not self-register; they are added by their sponsor.
 
 ## Key financial rules (both repos must respect)
 - All monetary amounts are **integers in minor currency units** (cents, kobo, etc.)

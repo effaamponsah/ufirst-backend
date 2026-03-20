@@ -11,20 +11,39 @@ No findings recorded yet.
 
 ### 2026-03-19
 
-#### [P1] Sponsor-only beneficiary endpoints do not enforce sponsor role
-File: `app/modules/identity/routes.py:121`
+#### Resolved
 
-`GET /users/me/beneficiaries` and `DELETE /users/me/beneficiaries/{beneficiary_id}` rely only on `get_current_user`; they never require the caller to be a sponsor. A beneficiary or vendor can call them and get a 200/404 instead of the expected 403, which breaks the endpoint contract and weakens authorization checks. Only the create-link path validates the sponsor role in the service layer.
+##### [DONE] [P1] Sponsor-only beneficiary endpoints did not enforce sponsor role
+Original file: `app/modules/identity/routes.py:121`
 
-#### [P0] KYC webhook mutates user status without verifying a signature
-File: `app/modules/identity/routes.py:173`
+`GET /users/me/beneficiaries` and `DELETE /users/me/beneficiaries/{beneficiary_id}` relied only on `get_current_user`. Fixed by adding `require_roles("sponsor")` as a dependency on both endpoints.
 
-`POST /kyc/webhook` accepts arbitrary JSON and calls `update_kyc_status()` directly, but there is no inbound signature check at all. That lets anyone who can reach the endpoint approve or reject KYC records by forging a webhook payload, which violates the repository rule that every webhook must verify its signature before processing.
+##### [DONE] [P0] KYC webhook mutated user status without verifying a signature
+Original file: `app/modules/identity/routes.py:173`
 
-#### [P1] Supabase webhook verification fails open when the secret is unset
-File: `app/modules/identity/routes.py:37`
+`POST /kyc/webhook` accepted arbitrary JSON with no signature check. Fixed by implementing HMAC-SHA256 verification via `_verify_kyc_signature()` using `KYC_WEBHOOK_SECRET`. Fails closed (500) when the secret is unset in non-dev mode.
 
-The Supabase webhook verifier returns early whenever `SUPABASE_WEBHOOK_SECRET` is blank. In any non-dev deployment with a missing secret, forged `user.created` payloads are accepted and arbitrary `identity.users` rows can be created. This should fail closed outside dev mode.
+##### [DONE] [P1] Supabase webhook verification failed open when the secret was unset
+Original file: `app/modules/identity/routes.py:37`
+
+The Supabase webhook verifier returned early when `SUPABASE_WEBHOOK_SECRET` was blank. Resolved by removing the webhook endpoint entirely — user provisioning is now lazy (auth middleware creates `identity.users` on first authenticated request via `IdentityService.get_or_create_user()`). The `POST /onboarding/complete-profile` endpoint fills in profile data.
+
+##### [DONE] [P1] Lazy provisioning middleware failed open on provisioning errors
+Original file: `app/modules/identity/middleware.py:46`
+
+The middleware swallowed `PermissionDenied` and generic exceptions and let the request continue without an identity row. Fixed by catching `UFirstError` subclasses and returning their HTTP status/body directly from the middleware, and catching all other exceptions and returning 500. Only `AuthenticationError` (bad/expired JWT) is passed through so the route handler can return the correct 401.
+
+##### [DONE] [P1] Test setup never applied the new identity migration
+Original file: `tests/conftest.py:42`
+
+`Base.metadata.create_all()` is a no-op for tables that already exist, so new columns (`country`, `beneficiary_relationship`) were silently absent on non-pristine databases. Fixed by calling `drop_all` before `create_all` in the session-scoped `db_engine` fixture, guaranteeing the schema always matches the current ORM models.
+
+#### Open
+
+##### [DONE] [P0] Lazy provisioning still breaks on blank-email users
+Original file: `app/modules/identity/service.py:65`
+
+The middleware now fails closed correctly, but `IdentityService.get_or_create_user()` still inserts `email=current_user.email` directly, while `verify_token()` produces `email=""` for dev tokens and for JWTs without an `email` claim. Because `identity.users.email` is still unique and non-null, the second blank-email user now fails with a 500 from the middleware due to `uq_users_email`. This still breaks the new lazy-provisioning path for phone-only users and multi-user dev/test flows.
 
 ## Phase 2 — Wallet Module
 
@@ -92,11 +111,35 @@ No findings recorded yet.
 
 ## Phase 4 — Card Module
 
-No findings recorded yet.
+### 2026-03-19
+
+#### Open
+
+##### [OPEN] [P1] `GET /cards/{card_id}` lets any sponsor read any card
+Original file: `app/modules/card/routes.py:105`
+
+The route is documented as sponsor-or-owner access, but the sponsor branch is still a stub: when `current_user.role == "sponsor"` it executes `pass` and falls through to `return card`. That means any authenticated sponsor can fetch any beneficiary card by UUID without proving an active sponsor-beneficiary link.
+
+##### [OPEN] [P1] Card issuance calls the processor before the backend has a durable local record
+Original file: `app/modules/card/service.py:69`
+
+`CardService.issue_card()` invokes the external processor first and only then inserts the local `card.cards` row. If the database write or transaction commit fails after the processor has already issued the card, the platform loses track of a real processor-side card and a retry can issue another one. The route also has no idempotency key or reservation step to make that external side effect safe.
+
+##### [OPEN] [P2] Live UP Nigeria mode is wired to a client whose methods still raise `NotImplementedError`
+Original file: `app/modules/card/processor/client.py:157`
+
+As soon as `UP_NIGERIA_API_KEY` is configured, `get_processor()` switches from the dev stub to `UPNigeriaClient`, but every lifecycle method in `app/modules/card/processor/up_nigeria.py` still raises `NotImplementedError`. That means issuance, activation, freeze/cancel, and spending-control updates will all 500 immediately in the first non-dev environment that sets the real processor credentials.
 
 ## Phase 5 — Transaction Module
 
-No findings recorded yet.
+### 2026-03-19
+
+#### Open
+
+##### [OPEN] [P1] Phase 5 transaction module is still missing
+Original file: `app/main.py:105`
+
+The architecture and plan both say Phase 5 owns `/transactions/*` plus processor authorization and clearing webhooks, but there is still no `app/modules/transaction/` package, no transaction router in `app/main.py`, no transaction migrations, and no `tests/modules/transaction/`. Phase 5 is effectively unimplemented, so POS authorization, clearing, settlement, and disputes do not exist yet.
 
 ## Phase 6 — Compliance Module
 

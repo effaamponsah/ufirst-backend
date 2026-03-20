@@ -8,7 +8,7 @@ from outside this module.
 
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,8 +18,9 @@ from app.modules.identity import repository as repo
 from app.modules.identity.events import KYCStatusChanged, SponsorBeneficiaryLinked, UserCreated
 from app.modules.identity.models import KYCStatus, LinkStatus, UserRole
 from app.modules.identity.schemas import (
+    CompleteProfileRequest,
+    CreateBeneficiaryRequest,
     KYCSubmissionResponse,
-    SponsorBeneficiaryLinkResponse,
     UserProfile,
 )
 
@@ -38,29 +39,58 @@ class IdentityService:
             raise NotFound(f"User {user_id} not found.")
         return UserProfile.model_validate(user)
 
-    async def create_user_from_webhook(
+    async def get_or_create_user(
         self,
+        supabase_uid: UUID,
         *,
-        user_id: UUID,
         email: str,
-        role: UserRole,
-        phone: str | None = None,
-        full_name: str | None = None,
+        role: str,
     ) -> UserProfile:
-        # Idempotent — Supabase may deliver the webhook more than once
-        existing = await repo.get_user(self._session, user_id)
+        """
+        Return the identity record for this Supabase UID, creating a skeleton
+        record from JWT claims if one does not yet exist.
+
+        Called by the lazy-provisioning middleware on every authenticated
+        request, and by route handlers that need the current user's DB record.
+        """
+        existing = await repo.get_user(self._session, supabase_uid)
         if existing is not None:
             return UserProfile.model_validate(existing)
 
+        try:
+            role_enum = UserRole(role)
+        except ValueError:
+            raise PermissionDenied(f"Unknown role: '{role}'")
+
         user = await repo.create_user(
             self._session,
-            user_id=user_id,
-            email=email,
-            role=role,
-            phone=phone,
-            full_name=full_name,
+            user_id=supabase_uid,
+            email=email or None,  # "" → NULL; phone-only JWTs and dev tokens have no email
+            role=role_enum,
         )
         await events.publish(UserCreated(user_id=user.id, role=user.role, email=user.email))
+        return UserProfile.model_validate(user)
+
+    async def complete_profile(
+        self,
+        user_id: UUID,
+        data: CompleteProfileRequest,
+    ) -> UserProfile:
+        """
+        Upsert profile fields (country, phone, full_name, beneficiary_relationship)
+        onto the skeleton record created by the auth middleware.
+        """
+        user = await repo.upsert_profile(
+            self._session,
+            user_id,
+            email=data.email,
+            country=data.country,
+            phone=data.phone,
+            full_name=data.full_name,
+            beneficiary_relationship=data.beneficiary_relationship,
+        )
+        if user is None:
+            raise NotFound(f"User {user_id} not found.")
         return UserProfile.model_validate(user)
 
     # ------------------------------------------------------------------
@@ -110,34 +140,32 @@ class IdentityService:
         users = await repo.list_beneficiaries(self._session, sponsor_id)
         return [UserProfile.model_validate(u) for u in users]
 
-    async def link_beneficiary(
-        self, sponsor_id: UUID, beneficiary_id: UUID
-    ) -> SponsorBeneficiaryLinkResponse:
-        # Validate both users exist and have the right roles
+    async def create_beneficiary(
+        self, sponsor_id: UUID, data: CreateBeneficiaryRequest
+    ) -> UserProfile:
+        """
+        Sponsor creates a beneficiary account and links it to themselves atomically.
+        A new UUID is generated for the beneficiary — they can use the card immediately
+        without needing a Supabase login.
+        """
         sponsor = await repo.get_user(self._session, sponsor_id)
         if sponsor is None or sponsor.role != UserRole.SPONSOR:
-            raise PermissionDenied("Only sponsors can create beneficiary links.")
+            raise PermissionDenied("Only sponsors can create beneficiaries.")
 
-        beneficiary = await repo.get_user(self._session, beneficiary_id)
-        if beneficiary is None or beneficiary.role != UserRole.BENEFICIARY:
-            raise NotFound("Beneficiary not found.")
-
-        # Idempotent — reactivate if already exists but suspended
-        existing = await repo.get_link(self._session, sponsor_id, beneficiary_id)
-        if existing is not None:
-            if existing.status == LinkStatus.ACTIVE:
-                return SponsorBeneficiaryLinkResponse.model_validate(existing)
-            updated = await repo.update_link_status(
-                self._session, sponsor_id, beneficiary_id, LinkStatus.ACTIVE
-            )
-            assert updated is not None
-            return SponsorBeneficiaryLinkResponse.model_validate(updated)
-
-        link = await repo.create_link(self._session, sponsor_id, beneficiary_id)
-        await events.publish(
-            SponsorBeneficiaryLinked(sponsor_id=sponsor_id, beneficiary_id=beneficiary_id)
+        beneficiary = await repo.create_user(
+            self._session,
+            user_id=uuid4(),
+            email=data.email or None,
+            role=UserRole.BENEFICIARY,
+            phone=data.phone,
+            full_name=data.full_name,
+            country=data.country,
+            beneficiary_relationship=data.beneficiary_relationship,
         )
-        return SponsorBeneficiaryLinkResponse.model_validate(link)
+        await repo.create_link(self._session, sponsor_id, beneficiary.id)
+        await events.publish(UserCreated(user_id=beneficiary.id, role=beneficiary.role, email=beneficiary.email))
+        await events.publish(SponsorBeneficiaryLinked(sponsor_id=sponsor_id, beneficiary_id=beneficiary.id))
+        return UserProfile.model_validate(beneficiary)
 
     async def remove_beneficiary_link(
         self, sponsor_id: UUID, beneficiary_id: UUID

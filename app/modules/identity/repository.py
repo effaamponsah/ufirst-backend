@@ -30,10 +30,12 @@ async def create_user(
     session: AsyncSession,
     *,
     user_id: UUID,
-    email: str,
+    email: str | None,
     role: UserRole,
     phone: str | None = None,
     full_name: str | None = None,
+    country: str | None = None,
+    beneficiary_relationship: str | None = None,
 ) -> User:
     user = User(
         id=user_id,
@@ -41,9 +43,38 @@ async def create_user(
         role=role,
         phone=phone,
         full_name=full_name,
+        country=country,
+        beneficiary_relationship=beneficiary_relationship,
         kyc_status=KYCStatus.PENDING,
     )
     session.add(user)
+    await session.flush()
+    return user
+
+
+async def upsert_profile(
+    session: AsyncSession,
+    user_id: UUID,
+    *,
+    email: str | None,
+    country: str | None,
+    phone: str | None,
+    full_name: str | None,
+    beneficiary_relationship: str | None,
+) -> User | None:
+    user = await get_user(session, user_id)
+    if user is None:
+        return None
+    if email is not None:
+        user.email = email
+    if country is not None:
+        user.country = country
+    if phone is not None:
+        user.phone = phone
+    if full_name is not None:
+        user.full_name = full_name
+    if beneficiary_relationship is not None:
+        user.beneficiary_relationship = beneficiary_relationship
     await session.flush()
     return user
 

@@ -9,39 +9,38 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
-
-async def _create_user(client: AsyncClient, user_id: str, role: str) -> None:
-    await client.post(
-        "/api/v1/auth/webhook/user-created",
-        json={
-            "type": "INSERT",
-            "table": "users",
-            "schema": "auth",
-            "record": {
-                "id": user_id,
-                "email": f"{user_id}@example.com",
-                "phone": None,
-                "raw_app_meta_data": {"role": role},
-                "raw_user_meta_data": {},
-            },
-        },
-    )
+_BENEFICIARY_DATA = {
+    "full_name": "Test Beneficiary",
+    "phone": "+2348012345678",
+    "country": "NG",
+    "beneficiary_relationship": "child",
+}
 
 
 @pytest.mark.asyncio
 async def test_create_wallet_on_user_creation(client: AsyncClient) -> None:
     """
     Wallets are created externally (e.g., via admin/ops after KYC).
-    This test creates a wallet directly via the service by calling the
-    internal endpoint available to admin/ops roles.
+    This test verifies a newly created beneficiary has no wallet (404).
+    Beneficiaries are sponsor-created, so we provision via the sponsor flow.
     """
-    user_id = str(uuid4())
-    await _create_user(client, user_id, "beneficiary")
+    sponsor_id = str(uuid4())
+    await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
+    )
+    create_resp = await client.post(
+        "/api/v1/users/me/beneficiaries",
+        json=_BENEFICIARY_DATA,
+        headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
+    )
+    assert create_resp.status_code == 201
+    beneficiary_id = create_resp.json()["id"]
 
     # No wallet yet — 404 expected
     resp = await client.get(
         "/api/v1/wallets/me",
-        headers={"Authorization": f"Bearer dev:{user_id}:beneficiary"},
+        headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
     )
     assert resp.status_code == 404
 

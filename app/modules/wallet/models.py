@@ -5,8 +5,8 @@ from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, Numeric, String, UniqueConstraint, func
-from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+from sqlalchemy import DateTime, Enum, ForeignKey, Integer, LargeBinary, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy.dialects.postgresql import JSONB, UUID as PG_UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -175,3 +175,156 @@ class FundingTransfer(Base):
     )
 
     wallet: Mapped[Wallet] = relationship(back_populates="funding_transfers")
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — Open Banking models
+# ---------------------------------------------------------------------------
+
+
+class BankConnectionStatus(str, enum.Enum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+    EXPIRED = "expired"
+
+
+class SponsorBankConnection(Base):
+    """
+    A linked bank account for a sponsor, used for open banking payments.
+
+    account_identifier_encrypted stores the IBAN / sort-code+account
+    encrypted with AES-256-GCM (see app.core.encryption).
+    """
+
+    __tablename__ = "sponsor_bank_connections"
+    __table_args__ = {"schema": "wallet"}
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    sponsor_id: Mapped[UUID] = mapped_column(PG_UUID(as_uuid=True), nullable=False)
+    aggregator: Mapped[str] = mapped_column(String(50), nullable=False)
+    external_account_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    account_identifier_encrypted: Mapped[bytes] = mapped_column(
+        LargeBinary, nullable=False
+    )
+    account_holder_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    provider_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    provider_display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False)
+    consent_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    consent_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    status: Mapped[BankConnectionStatus] = mapped_column(
+        Enum(BankConnectionStatus, native_enum=False, length=20),
+        nullable=False,
+        default=BankConnectionStatus.ACTIVE,
+        server_default=BankConnectionStatus.ACTIVE.value,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class OpenBankingPayment(Base):
+    """
+    One-to-one record linking a FundingTransfer to its aggregator payment.
+    Created after a successful aggregator.initiate() call.
+    """
+
+    __tablename__ = "open_banking_payments"
+    __table_args__ = {"schema": "wallet"}
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    funding_transfer_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("wallet.funding_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    aggregator: Mapped[str] = mapped_column(String(50), nullable=False)
+    aggregator_payment_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    auth_link: Mapped[str] = mapped_column(Text, nullable=False)
+    bank_status: Mapped[str | None] = mapped_column(String(100))
+    failure_reason: Mapped[str | None] = mapped_column(String(500))
+    webhook_received_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+
+class OpenBankingWebhookLog(Base):
+    """
+    Raw webhook audit log — persisted before any processing.
+    Every inbound webhook is logged here regardless of validity.
+    """
+
+    __tablename__ = "open_banking_webhooks_log"
+    __table_args__ = {"schema": "wallet"}
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    aggregator: Mapped[str] = mapped_column(String(50), nullable=False)
+    event_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSONB, nullable=False)  # type: ignore[type-arg]
+    signature_valid: Mapped[bool] = mapped_column(nullable=False)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processing_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+
+# ---------------------------------------------------------------------------
+# Phase 3.8 — Card payment (Stripe fallback)
+# ---------------------------------------------------------------------------
+
+
+class CardPayment(Base):
+    """
+    Stripe PaymentIntent record for card-funded transfers.
+    card_last4 / card_brand are populated after Stripe confirms the payment.
+    """
+
+    __tablename__ = "card_payments"
+    __table_args__ = {"schema": "wallet"}
+
+    id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True), primary_key=True, server_default=func.gen_random_uuid()
+    )
+    funding_transfer_id: Mapped[UUID] = mapped_column(
+        PG_UUID(as_uuid=True),
+        ForeignKey("wallet.funding_transfers.id", ondelete="RESTRICT"),
+        nullable=False,
+        unique=True,
+    )
+    stripe_payment_intent_id: Mapped[str] = mapped_column(
+        String(255), nullable=False, unique=True, index=True
+    )
+    # Stripe client_secret — frontend passes this to Stripe.js to complete payment
+    auth_link: Mapped[str] = mapped_column(Text, nullable=False)
+    card_last4: Mapped[str | None] = mapped_column(String(4))
+    card_brand: Mapped[str | None] = mapped_column(String(50))
+    fee_amount: Mapped[int] = mapped_column(
+        Integer(), nullable=False, default=0, server_default="0"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False
+    )

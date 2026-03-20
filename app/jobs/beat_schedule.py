@@ -15,21 +15,21 @@ celery_app.conf.beat_schedule = {
     # ---------------------------------------------------------------------------
     # Wallet / Open Banking (Phase 3)
     # ---------------------------------------------------------------------------
-    # "wallet.poll-pending-payments": {
-    #     "task": "app.modules.wallet.tasks.poll_pending_payments",
-    #     "schedule": 300,    # every 5 minutes
-    #     "options": {"queue": "default"},
-    # },
-    # "wallet.expire-stale-authorizations": {
-    #     "task": "app.modules.wallet.tasks.expire_stale_authorizations",
-    #     "schedule": 60,     # every minute
-    #     "options": {"queue": "default"},
-    # },
-    # "wallet.warn-expiring-consent": {
-    #     "task": "app.modules.wallet.tasks.warn_expiring_bank_consent",
-    #     "schedule": crontab(hour=8, minute=0),   # daily at 08:00 UTC
-    #     "options": {"queue": "bulk"},
-    # },
+    "wallet.poll-pending-payments": {
+        "task": "app.modules.wallet.tasks.poll_pending_payments",
+        "schedule": 300,    # every 5 minutes
+        "options": {"queue": "default"},
+    },
+    "wallet.expire-stale-authorizations": {
+        "task": "app.modules.wallet.tasks.expire_stale_authorizations",
+        "schedule": 60,     # every minute
+        "options": {"queue": "default"},
+    },
+    "wallet.warn-expiring-consent": {
+        "task": "app.modules.wallet.tasks.warn_expiring_bank_consent",
+        "schedule": crontab(hour=8, minute=0),   # daily at 08:00 UTC
+        "options": {"queue": "bulk"},
+    },
     # ---------------------------------------------------------------------------
     # Reporting / Reconciliation (Phase 9)
     # ---------------------------------------------------------------------------

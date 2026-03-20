@@ -49,6 +49,9 @@ async def db_engine():
             "vendor", "compliance", "notification", "reporting",
         ]:
             await conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {schema}"))
+        # drop_all before create_all ensures existing tables with stale schemas
+        # (e.g. missing columns from new migrations) are fully recreated.
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
 
     yield engine

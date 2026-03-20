@@ -28,22 +28,11 @@ from app.modules.wallet.service import WalletService
 
 
 async def _create_user(client: AsyncClient, user_id: str, role: str) -> None:
-    resp = await client.post(
-        "/api/v1/auth/webhook/user-created",
-        json={
-            "type": "INSERT",
-            "table": "users",
-            "schema": "auth",
-            "record": {
-                "id": user_id,
-                "email": f"{user_id}@example.com",
-                "phone": None,
-                "raw_app_meta_data": {"role": role},
-                "raw_user_meta_data": {},
-            },
-        },
+    resp = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer dev:{user_id}:{role}"},
     )
-    assert resp.status_code == 201
+    assert resp.status_code == 200
 
 
 async def _create_wallet_direct(owner_id: str, currency: str = "GBP") -> str:
@@ -101,9 +90,8 @@ async def test_initiate_funding_creates_transfer(client: AsyncClient) -> None:
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["payment_state"] == "initiated"
+    assert body["payment_state"] == "awaiting_authorization"
     assert body["source_amount"] == 5000
-    assert body["wallet_id"] == wallet_id
 
 
 @pytest.mark.asyncio
@@ -120,7 +108,7 @@ async def test_initiate_funding_is_idempotent(client: AsyncClient) -> None:
     r2 = await client.post("/api/v1/funding/initiate", json=payload, headers=headers)
     assert r1.status_code == 201
     assert r2.status_code == 201
-    assert r1.json()["id"] == r2.json()["id"]
+    assert r1.json()["funding_transfer_id"] == r2.json()["funding_transfer_id"]
 
 
 @pytest.mark.asyncio
@@ -187,13 +175,13 @@ async def test_idempotency_key_reuse_with_different_payload_is_conflict() -> Non
 @pytest.mark.asyncio
 async def test_non_sponsor_cannot_initiate_funding(client: AsyncClient) -> None:
     user_id = str(uuid4())
-    await _create_user(client, user_id, "beneficiary")
+    await _create_user(client, user_id, "ops_agent")
     await _create_wallet_direct(user_id)
 
     resp = await client.post(
         "/api/v1/funding/initiate",
         json={"payment_method": "open_banking", "source_amount": 1000, "source_currency": "GBP"},
-        headers={"Authorization": f"Bearer dev:{user_id}:beneficiary", "Idempotency-Key": str(uuid4())},
+        headers={"Authorization": f"Bearer dev:{user_id}:ops_agent", "Idempotency-Key": str(uuid4())},
     )
     assert resp.status_code == 403
 
@@ -226,9 +214,9 @@ async def test_complete_funding_credits_wallet(client: AsyncClient) -> None:
         headers=_sponsor_headers(sponsor_id, {"Idempotency-Key": str(uuid4())}),
     )
     assert init_resp.status_code == 201
-    transfer_id = init_resp.json()["id"]
+    transfer_id = init_resp.json()["funding_transfer_id"]
 
-    for state in ("awaiting_authorization", "authorizing", "awaiting_settlement"):
+    for state in ("authorizing", "awaiting_settlement"):
         r = await client.patch(
             f"/api/v1/funding/{transfer_id}/state",
             json={"payment_state": state},
@@ -259,9 +247,9 @@ async def test_invalid_state_transition_rejected(client: AsyncClient) -> None:
         json={"payment_method": "open_banking", "source_amount": 2000, "source_currency": "GBP"},
         headers=_sponsor_headers(sponsor_id, {"Idempotency-Key": str(uuid4())}),
     )
-    transfer_id = init_resp.json()["id"]
+    transfer_id = init_resp.json()["funding_transfer_id"]
 
-    # Jump directly from INITIATED to COMPLETED — invalid
+    # Jump directly from AWAITING_AUTHORIZATION to COMPLETED — invalid
     resp = await client.patch(
         f"/api/v1/funding/{transfer_id}/state",
         json={"payment_state": "completed"},
@@ -281,7 +269,7 @@ async def test_get_funding_transfer_owner_can_read(client: AsyncClient) -> None:
         json={"payment_method": "card", "source_amount": 1500, "source_currency": "GBP"},
         headers=_sponsor_headers(sponsor_id, {"Idempotency-Key": str(uuid4())}),
     )
-    transfer_id = init_resp.json()["id"]
+    transfer_id = init_resp.json()["funding_transfer_id"]
 
     get_resp = await client.get(
         f"/api/v1/funding/{transfer_id}",
@@ -386,7 +374,7 @@ async def test_get_funding_transfer_other_user_denied(client: AsyncClient) -> No
         json={"payment_method": "card", "source_amount": 1500, "source_currency": "GBP"},
         headers=_sponsor_headers(sponsor_id, {"Idempotency-Key": str(uuid4())}),
     )
-    transfer_id = init_resp.json()["id"]
+    transfer_id = init_resp.json()["funding_transfer_id"]
 
     # Different user trying to read this transfer
     resp = await client.get(

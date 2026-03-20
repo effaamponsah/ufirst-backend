@@ -76,6 +76,7 @@ celery -A app.jobs.celery_app beat -l info
 - Integration tests against real PostgreSQL (use testcontainers or Render preview DBs)
 
 ## IMPORTANT rules
+- User provisioning is lazy, not webhook-driven. The auth middleware creates `identity.users` on the first authenticated request if the row doesn't exist for the Supabase UUID. Never assume the record already exists — always go through `IdentityService.get_or_create_user(supabase_uid, jwt_claims)`. The `/onboarding/complete-profile` endpoint upserts profile data (country, phone, beneficiary relationship) onto the skeleton record.
 - NEVER store raw card PANs. Only processor-issued tokens. If you see a raw card number in code, that is a critical security bug.
 - NEVER use `float` for financial calculations. Always `int` (minor units) or `Decimal` with explicit rounding.
 - NEVER query across module schemas. Call the owning module's service interface.

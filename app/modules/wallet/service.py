@@ -8,6 +8,7 @@ directly from outside this module.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from uuid import UUID
 
@@ -125,6 +126,7 @@ class WalletService:
         dest_amount: int,
         dest_currency: str,
         fx_rate: Decimal,
+        fx_rate_locked_until: "datetime | None" = None,
         fee_amount: int,
         idempotency_key: str,
     ) -> FundingTransferResponse:
@@ -172,6 +174,7 @@ class WalletService:
                 dest_amount=dest_amount,
                 dest_currency=dest_currency,
                 fx_rate=fx_rate,
+                fx_rate_locked_until=fx_rate_locked_until,
                 fee_amount=fee_amount,
                 idempotency_key=idempotency_key,
             )

@@ -1,18 +1,23 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.modules.wallet.models import (
+    BankConnectionStatus,
+    CardPayment,
     EntryType,
     FundingTransfer,
     LedgerEntry,
+    OpenBankingPayment,
+    OpenBankingWebhookLog,
     PaymentMethod,
     PaymentState,
+    SponsorBankConnection,
     Wallet,
     WalletStatus,
 )
@@ -157,6 +162,7 @@ async def create_funding_transfer(
     dest_amount: int,
     dest_currency: str,
     fx_rate: Decimal,
+    fx_rate_locked_until: datetime | None = None,
     fee_amount: int,
     idempotency_key: str,
 ) -> FundingTransfer:
@@ -170,6 +176,7 @@ async def create_funding_transfer(
         dest_amount=dest_amount,
         dest_currency=dest_currency,
         fx_rate=fx_rate,
+        fx_rate_locked_until=fx_rate_locked_until,
         fee_amount=fee_amount,
         idempotency_key=idempotency_key,
     )
@@ -195,3 +202,298 @@ async def update_funding_transfer_state(
     await session.flush()
     await session.refresh(transfer)
     return transfer
+
+
+# ---------------------------------------------------------------------------
+# Bank connections
+# ---------------------------------------------------------------------------
+
+
+async def get_bank_connection(
+    session: AsyncSession, connection_id: UUID
+) -> SponsorBankConnection | None:
+    result = await session.execute(
+        select(SponsorBankConnection).where(SponsorBankConnection.id == connection_id)
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_bank_connections(
+    session: AsyncSession, sponsor_id: UUID
+) -> list[SponsorBankConnection]:
+    result = await session.execute(
+        select(SponsorBankConnection)
+        .where(
+            SponsorBankConnection.sponsor_id == sponsor_id,
+            SponsorBankConnection.status == BankConnectionStatus.ACTIVE,
+        )
+        .order_by(SponsorBankConnection.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+async def create_bank_connection(
+    session: AsyncSession,
+    *,
+    sponsor_id: UUID,
+    aggregator: str,
+    external_account_id: str,
+    account_identifier_encrypted: bytes,
+    account_holder_name: str,
+    provider_id: str,
+    provider_display_name: str,
+    currency: str,
+    consent_id: str,
+    consent_expires_at: datetime | None,
+) -> SponsorBankConnection:
+    conn = SponsorBankConnection(
+        sponsor_id=sponsor_id,
+        aggregator=aggregator,
+        external_account_id=external_account_id,
+        account_identifier_encrypted=account_identifier_encrypted,
+        account_holder_name=account_holder_name,
+        provider_id=provider_id,
+        provider_display_name=provider_display_name,
+        currency=currency,
+        consent_id=consent_id,
+        consent_expires_at=consent_expires_at,
+        status=BankConnectionStatus.ACTIVE,
+    )
+    session.add(conn)
+    await session.flush()
+    return conn
+
+
+async def update_bank_connection_status(
+    session: AsyncSession,
+    connection_id: UUID,
+    status: BankConnectionStatus,
+) -> SponsorBankConnection | None:
+    conn = await get_bank_connection(session, connection_id)
+    if conn is None:
+        return None
+    conn.status = status
+    await session.flush()
+    return conn
+
+
+async def list_expiring_connections(
+    session: AsyncSession,
+    *,
+    days_ahead: int = 7,
+) -> list[SponsorBankConnection]:
+    """Return ACTIVE connections whose consent expires within `days_ahead` days."""
+    cutoff = datetime.now(timezone.utc) + timedelta(days=days_ahead)
+    result = await session.execute(
+        select(SponsorBankConnection).where(
+            SponsorBankConnection.status == BankConnectionStatus.ACTIVE,
+            SponsorBankConnection.consent_expires_at.isnot(None),
+            SponsorBankConnection.consent_expires_at <= cutoff,
+        )
+    )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Open banking payments
+# ---------------------------------------------------------------------------
+
+
+async def create_open_banking_payment(
+    session: AsyncSession,
+    *,
+    funding_transfer_id: UUID,
+    aggregator: str,
+    aggregator_payment_id: str,
+    auth_link: str,
+) -> OpenBankingPayment:
+    ob = OpenBankingPayment(
+        funding_transfer_id=funding_transfer_id,
+        aggregator=aggregator,
+        aggregator_payment_id=aggregator_payment_id,
+        auth_link=auth_link,
+    )
+    session.add(ob)
+    await session.flush()
+    return ob
+
+
+async def get_open_banking_payment_by_transfer_id(
+    session: AsyncSession, funding_transfer_id: UUID
+) -> OpenBankingPayment | None:
+    result = await session.execute(
+        select(OpenBankingPayment).where(
+            OpenBankingPayment.funding_transfer_id == funding_transfer_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_open_banking_payment_by_aggregator_id(
+    session: AsyncSession, aggregator_payment_id: str
+) -> OpenBankingPayment | None:
+    result = await session.execute(
+        select(OpenBankingPayment).where(
+            OpenBankingPayment.aggregator_payment_id == aggregator_payment_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_open_banking_payment(
+    session: AsyncSession,
+    ob_payment: OpenBankingPayment,
+    *,
+    bank_status: str,
+    webhook_received_at: datetime | None = None,
+    failure_reason: str | None = None,
+) -> OpenBankingPayment:
+    ob_payment.bank_status = bank_status
+    if webhook_received_at is not None:
+        ob_payment.webhook_received_at = webhook_received_at
+    if failure_reason is not None:
+        ob_payment.failure_reason = failure_reason
+    await session.flush()
+    return ob_payment
+
+
+# ---------------------------------------------------------------------------
+# Webhook log
+# ---------------------------------------------------------------------------
+
+
+async def create_webhook_log(
+    session: AsyncSession,
+    *,
+    aggregator: str,
+    event_type: str,
+    payload: dict,  # type: ignore[type-arg]
+    signature_valid: bool,
+) -> OpenBankingWebhookLog:
+    log_entry = OpenBankingWebhookLog(
+        aggregator=aggregator,
+        event_type=event_type,
+        payload=payload,
+        signature_valid=signature_valid,
+    )
+    session.add(log_entry)
+    await session.flush()
+    return log_entry
+
+
+async def mark_webhook_processed(
+    session: AsyncSession,
+    log_entry: OpenBankingWebhookLog,
+    *,
+    error: str | None = None,
+) -> None:
+    log_entry.processed_at = datetime.now(timezone.utc)
+    if error:
+        log_entry.processing_error = error
+    await session.flush()
+
+
+# ---------------------------------------------------------------------------
+# Safety-net queries (used by Celery beat tasks)
+# ---------------------------------------------------------------------------
+
+
+async def list_pending_settlement_transfers(
+    session: AsyncSession,
+) -> list[tuple[UUID, str]]:
+    """
+    Return (transfer_id, aggregator_payment_id) for AWAITING_SETTLEMENT
+    transfers where no webhook has arrived yet and the transfer is > 5 min old.
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
+    result = await session.execute(
+        select(FundingTransfer.id, OpenBankingPayment.aggregator_payment_id)
+        .join(
+            OpenBankingPayment,
+            OpenBankingPayment.funding_transfer_id == FundingTransfer.id,
+        )
+        .where(
+            FundingTransfer.payment_state == PaymentState.AWAITING_SETTLEMENT,
+            OpenBankingPayment.webhook_received_at.is_(None),
+            FundingTransfer.created_at < cutoff,
+        )
+    )
+    return [(row[0], row[1]) for row in result.all()]
+
+
+async def list_stale_authorization_transfer_ids(
+    session: AsyncSession,
+) -> list[UUID]:
+    """
+    Return IDs of transfers in AWAITING_AUTHORIZATION that have not
+    progressed for more than 15 minutes (sponsor never completed bank auth).
+    """
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=15)
+    result = await session.execute(
+        select(FundingTransfer.id).where(
+            FundingTransfer.payment_state == PaymentState.AWAITING_AUTHORIZATION,
+            FundingTransfer.payment_state_changed_at < cutoff,
+        )
+    )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Card payments (Phase 3.8)
+# ---------------------------------------------------------------------------
+
+
+async def create_card_payment(
+    session: AsyncSession,
+    *,
+    funding_transfer_id: UUID,
+    stripe_payment_intent_id: str,
+    auth_link: str,
+    fee_amount: int = 0,
+) -> CardPayment:
+    cp = CardPayment(
+        funding_transfer_id=funding_transfer_id,
+        stripe_payment_intent_id=stripe_payment_intent_id,
+        auth_link=auth_link,
+        fee_amount=fee_amount,
+    )
+    session.add(cp)
+    await session.flush()
+    return cp
+
+
+async def get_card_payment_by_transfer_id(
+    session: AsyncSession, funding_transfer_id: UUID
+) -> CardPayment | None:
+    result = await session.execute(
+        select(CardPayment).where(
+            CardPayment.funding_transfer_id == funding_transfer_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_card_payment_by_intent_id(
+    session: AsyncSession, intent_id: str
+) -> CardPayment | None:
+    result = await session.execute(
+        select(CardPayment).where(
+            CardPayment.stripe_payment_intent_id == intent_id
+        )
+    )
+    return result.scalar_one_or_none()
+
+
+async def update_card_payment(
+    session: AsyncSession,
+    cp: CardPayment,
+    *,
+    card_last4: str | None = None,
+    card_brand: str | None = None,
+) -> CardPayment:
+    if card_last4 is not None:
+        cp.card_last4 = card_last4
+    if card_brand is not None:
+        cp.card_brand = card_brand
+    await session.flush()
+    return cp

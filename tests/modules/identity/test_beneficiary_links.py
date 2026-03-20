@@ -9,66 +9,61 @@ from uuid import uuid4
 import pytest
 from httpx import AsyncClient
 
+_BENEFICIARY_DATA = {
+    "full_name": "Jane Doe",
+    "phone": "+2348012345678",
+    "country": "NG",
+    "beneficiary_relationship": "spouse",
+}
 
-async def _create_user(client: AsyncClient, role: str) -> str:
+
+async def _create_sponsor(client: AsyncClient) -> str:
+    """Provision a sponsor via lazy provisioning."""
     user_id = str(uuid4())
-    resp = await client.post(
-        "/api/v1/auth/webhook/user-created",
-        json={
-            "type": "INSERT",
-            "table": "users",
-            "schema": "auth",
-            "record": {
-                "id": user_id,
-                "email": f"{user_id}@example.com",
-                "phone": None,
-                "raw_app_meta_data": {"role": role},
-                "raw_user_meta_data": {},
-            },
-        },
+    resp = await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer dev:{user_id}:sponsor"},
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
     return user_id
 
 
+async def _create_beneficiary(client: AsyncClient, sponsor_id: str) -> str:
+    """Sponsor creates a beneficiary; returns the new beneficiary's UUID."""
+    resp = await client.post(
+        "/api/v1/users/me/beneficiaries",
+        json=_BENEFICIARY_DATA,
+        headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["id"]
+
+
 @pytest.mark.asyncio
-async def test_sponsor_links_beneficiary(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    beneficiary_id = await _create_user(client, "beneficiary")
+async def test_sponsor_creates_beneficiary(client: AsyncClient) -> None:
+    sponsor_id = await _create_sponsor(client)
 
     resp = await client.post(
-        f"/api/v1/users/me/beneficiaries/{beneficiary_id}",
+        "/api/v1/users/me/beneficiaries",
+        json=_BENEFICIARY_DATA,
         headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
     )
     assert resp.status_code == 201
     body = resp.json()
-    assert body["sponsor_id"] == sponsor_id
-    assert body["beneficiary_id"] == beneficiary_id
-    assert body["status"] == "active"
-
-
-@pytest.mark.asyncio
-async def test_linking_is_idempotent(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    beneficiary_id = await _create_user(client, "beneficiary")
-    headers = {"Authorization": f"Bearer dev:{sponsor_id}:sponsor"}
-
-    r1 = await client.post(f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers)
-    r2 = await client.post(f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers)
-    assert r1.status_code == 201
-    assert r2.status_code == 201
-    assert r1.json()["id"] == r2.json()["id"]
+    assert body["role"] == "beneficiary"
+    assert body["full_name"] == "Jane Doe"
+    assert body["country"] == "NG"
+    assert body["beneficiary_relationship"] == "spouse"
+    assert body["kyc_status"] == "pending"
 
 
 @pytest.mark.asyncio
 async def test_list_beneficiaries(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    b1 = await _create_user(client, "beneficiary")
-    b2 = await _create_user(client, "beneficiary")
+    sponsor_id = await _create_sponsor(client)
     headers = {"Authorization": f"Bearer dev:{sponsor_id}:sponsor"}
 
-    await client.post(f"/api/v1/users/me/beneficiaries/{b1}", headers=headers)
-    await client.post(f"/api/v1/users/me/beneficiaries/{b2}", headers=headers)
+    b1 = await _create_beneficiary(client, sponsor_id)
+    b2 = await _create_beneficiary(client, sponsor_id)
 
     resp = await client.get("/api/v1/users/me/beneficiaries", headers=headers)
     assert resp.status_code == 200
@@ -79,38 +74,39 @@ async def test_list_beneficiaries(client: AsyncClient) -> None:
 
 @pytest.mark.asyncio
 async def test_remove_beneficiary_link(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    beneficiary_id = await _create_user(client, "beneficiary")
+    sponsor_id = await _create_sponsor(client)
+    beneficiary_id = await _create_beneficiary(client, sponsor_id)
     headers = {"Authorization": f"Bearer dev:{sponsor_id}:sponsor"}
-
-    await client.post(f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers)
 
     resp = await client.delete(
         f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers
     )
     assert resp.status_code == 204
 
-    # Should no longer appear in the list
     list_resp = await client.get("/api/v1/users/me/beneficiaries", headers=headers)
     ids = {u["id"] for u in list_resp.json()}
     assert beneficiary_id not in ids
 
 
 @pytest.mark.asyncio
-async def test_non_sponsor_cannot_link(client: AsyncClient) -> None:
-    beneficiary_id = await _create_user(client, "beneficiary")
-    other_beneficiary_id = await _create_user(client, "beneficiary")
-
+async def test_non_sponsor_cannot_create_beneficiary(client: AsyncClient) -> None:
+    beneficiary_sponsor_id = str(uuid4())
+    await client.get(
+        "/api/v1/users/me",
+        headers={"Authorization": f"Bearer dev:{beneficiary_sponsor_id}:beneficiary"},
+    )
     resp = await client.post(
-        f"/api/v1/users/me/beneficiaries/{other_beneficiary_id}",
-        headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
+        "/api/v1/users/me/beneficiaries",
+        json=_BENEFICIARY_DATA,
+        headers={"Authorization": f"Bearer dev:{beneficiary_sponsor_id}:beneficiary"},
     )
     assert resp.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_beneficiary_cannot_list_beneficiaries(client: AsyncClient) -> None:
-    beneficiary_id = await _create_user(client, "beneficiary")
+    sponsor_id = await _create_sponsor(client)
+    beneficiary_id = await _create_beneficiary(client, sponsor_id)
 
     resp = await client.get(
         "/api/v1/users/me/beneficiaries",
@@ -120,20 +116,12 @@ async def test_beneficiary_cannot_list_beneficiaries(client: AsyncClient) -> Non
 
 
 @pytest.mark.asyncio
-async def test_beneficiary_cannot_remove_beneficiary_link(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    beneficiary_id = await _create_user(client, "beneficiary")
-    target_id = await _create_user(client, "beneficiary")
+async def test_beneficiary_cannot_remove_link(client: AsyncClient) -> None:
+    sponsor_id = await _create_sponsor(client)
+    beneficiary_id = await _create_beneficiary(client, sponsor_id)
 
-    # Sponsor creates the link first
-    await client.post(
-        f"/api/v1/users/me/beneficiaries/{beneficiary_id}",
-        headers={"Authorization": f"Bearer dev:{sponsor_id}:sponsor"},
-    )
-
-    # Beneficiary tries to delete — must be rejected
     resp = await client.delete(
-        f"/api/v1/users/me/beneficiaries/{target_id}",
+        f"/api/v1/users/me/beneficiaries/{beneficiary_id}",
         headers={"Authorization": f"Bearer dev:{beneficiary_id}:beneficiary"},
     )
     assert resp.status_code == 403
@@ -141,11 +129,9 @@ async def test_beneficiary_cannot_remove_beneficiary_link(client: AsyncClient) -
 
 @pytest.mark.asyncio
 async def test_sponsor_list_and_remove_happy_path(client: AsyncClient) -> None:
-    sponsor_id = await _create_user(client, "sponsor")
-    beneficiary_id = await _create_user(client, "beneficiary")
+    sponsor_id = await _create_sponsor(client)
+    beneficiary_id = await _create_beneficiary(client, sponsor_id)
     headers = {"Authorization": f"Bearer dev:{sponsor_id}:sponsor"}
-
-    await client.post(f"/api/v1/users/me/beneficiaries/{beneficiary_id}", headers=headers)
 
     list_resp = await client.get("/api/v1/users/me/beneficiaries", headers=headers)
     assert list_resp.status_code == 200

@@ -9,11 +9,10 @@ celery_app = Celery(
     broker=settings.effective_celery_broker,
     backend=settings.effective_celery_backend,
     include=[
-        # Task modules — add each module's tasks here as they are implemented
-        # "app.modules.wallet.tasks",
-        # "app.modules.compliance.tasks",
-        # "app.modules.notification.tasks",
-        # "app.modules.reporting.tasks",
+        "app.modules.wallet.tasks",
+        # "app.modules.compliance.tasks",  # Phase 6
+        # "app.modules.notification.tasks",  # Phase 8
+        # "app.modules.reporting.tasks",  # Phase 9
     ],
 )
 

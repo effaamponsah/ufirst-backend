@@ -11,11 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.core.auth import CurrentUser, get_current_user, require_roles
 from app.core.database import get_db
-from app.modules.identity.models import KYCStatus, UserRole
+from app.modules.identity.models import KYCStatus
 from app.modules.identity.schemas import (
+    CompleteProfileRequest,
+    CreateBeneficiaryRequest,
     KYCSubmissionResponse,
-    SponsorBeneficiaryLinkResponse,
-    SupabaseWebhookPayload,
     UserProfile,
 )
 from app.modules.identity.service import IdentityService
@@ -30,66 +30,76 @@ def _get_service(session: AsyncSession = Depends(get_db)) -> IdentityService:
 
 
 # ---------------------------------------------------------------------------
-# Webhook — Supabase user.created
+# Webhook signature verification helpers
 # ---------------------------------------------------------------------------
 
 
-def _verify_supabase_signature(body: bytes, signature_header: str | None) -> None:
+def _verify_hmac_sha256(
+    body: bytes,
+    signature_header: str | None,
+    secret: str,
+    *,
+    header_prefix: str = "sha256=",
+    error_label: str = "webhook",
+) -> None:
     """
-    Supabase signs webhook payloads with HMAC-SHA256 using the webhook secret.
-    Header format:  x-supabase-signature: sha256=<hex_digest>
-    Skip verification in dev mode or when no secret is configured.
+    Verify an HMAC-SHA256 webhook signature.
+    Raises 401 if the signature is missing or invalid.
     """
-    if settings.dev_mode or not settings.supabase_webhook_secret:
-        return
-
     if not signature_header:
-        raise HTTPException(status_code=401, detail="Missing webhook signature.")
+        raise HTTPException(
+            status_code=401, detail=f"Missing {error_label} signature header."
+        )
 
-    expected = "sha256=" + hmac.new(
-        settings.supabase_webhook_secret.encode(),
-        body,
-        hashlib.sha256,
+    expected = header_prefix + hmac.new(
+        secret.encode(), body, hashlib.sha256
     ).hexdigest()
 
     if not hmac.compare_digest(expected, signature_header):
-        raise HTTPException(status_code=401, detail="Invalid webhook signature.")
-
-
-@router.post("/auth/webhook/user-created", status_code=201)
-async def user_created_webhook(
-    request: Request,
-    x_supabase_signature: str | None = Header(default=None),
-    service: IdentityService = Depends(_get_service),
-) -> UserProfile:
-    body = await request.body()
-    _verify_supabase_signature(body, x_supabase_signature)
-
-    payload = SupabaseWebhookPayload.model_validate_json(body)
-
-    if payload.type != "INSERT" or payload.table != "users":
-        # Ignore updates and other event types
-        raise HTTPException(status_code=200, detail="Event ignored.")
-
-    record = payload.record
-    raw_role = record.raw_app_meta_data.get("role", "")
-    try:
-        role = UserRole(raw_role)
-    except ValueError:
-        log.warning("Unknown role '%s' in Supabase webhook for user %s", raw_role, record.id)
         raise HTTPException(
-            status_code=422, detail=f"Unknown role: '{raw_role}'. Cannot create user."
+            status_code=401, detail=f"Invalid {error_label} signature."
         )
 
-    full_name = record.raw_user_meta_data.get("full_name")
 
-    return await service.create_user_from_webhook(
-        user_id=record.id,
-        email=record.email or "",
-        role=role,
-        phone=record.phone,
-        full_name=full_name,
+def _verify_kyc_signature(body: bytes, signature_header: str | None) -> None:
+    """
+    Verify the KYC provider webhook signature (HMAC-SHA256).
+    Header: x-kyc-signature: sha256=<hex_digest>
+
+    Skipped in dev mode only. Fails closed when KYC_WEBHOOK_SECRET is unset
+    in a non-dev environment.
+    """
+    if settings.dev_mode:
+        return
+
+    if not settings.kyc_webhook_secret:
+        raise HTTPException(
+            status_code=500,
+            detail="KYC_WEBHOOK_SECRET is not configured. Cannot verify webhook.",
+        )
+
+    _verify_hmac_sha256(
+        body, signature_header, settings.kyc_webhook_secret, error_label="KYC webhook"
     )
+
+
+# ---------------------------------------------------------------------------
+# Onboarding
+# ---------------------------------------------------------------------------
+
+
+@router.post("/onboarding/complete-profile", status_code=200)
+async def complete_profile(
+    body: CompleteProfileRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: IdentityService = Depends(_get_service),
+) -> UserProfile:
+    """
+    Upsert profile data (country, phone, full_name, beneficiary_relationship)
+    onto the skeleton record created by the auth middleware on first login.
+    Safe to call multiple times (idempotent for the same values).
+    """
+    return await service.complete_profile(current_user.id, body)
 
 
 # ---------------------------------------------------------------------------
@@ -102,7 +112,9 @@ async def get_me(
     current_user: CurrentUser = Depends(get_current_user),
     service: IdentityService = Depends(_get_service),
 ) -> UserProfile:
-    return await service.get_user(current_user.id)
+    return await service.get_or_create_user(
+        current_user.id, email=current_user.email, role=current_user.role
+    )
 
 
 @router.get("/users/{user_id}", dependencies=[Depends(require_roles("admin", "ops_agent"))])
@@ -127,16 +139,16 @@ async def list_beneficiaries(
 
 
 @router.post(
-    "/users/me/beneficiaries/{beneficiary_id}",
+    "/users/me/beneficiaries",
     status_code=201,
     dependencies=[Depends(require_roles("sponsor"))],
 )
-async def link_beneficiary(
-    beneficiary_id: UUID,
+async def create_beneficiary(
+    body: CreateBeneficiaryRequest,
     current_user: CurrentUser = Depends(get_current_user),
     service: IdentityService = Depends(_get_service),
-) -> SponsorBeneficiaryLinkResponse:
-    return await service.link_beneficiary(current_user.id, beneficiary_id)
+) -> UserProfile:
+    return await service.create_beneficiary(current_user.id, body)
 
 
 @router.delete(
@@ -181,14 +193,19 @@ async def submit_kyc(
 @router.post("/kyc/webhook", status_code=200)
 async def kyc_provider_webhook(
     request: Request,
+    x_kyc_signature: str | None = Header(default=None),
     service: IdentityService = Depends(_get_service),
 ) -> dict:  # type: ignore[type-arg]
     """
     Webhook from KYC provider (e.g. Onfido, Smile Identity).
-    Signature verification and payload parsing are provider-specific —
-    implement here when the provider is chosen.
+    Signature verification uses HMAC-SHA256 over the raw request body.
+    Header: x-kyc-signature: sha256=<hex_digest>
     """
-    body = await request.json()
+    raw_body = await request.body()
+    _verify_kyc_signature(raw_body, x_kyc_signature)
+
+    import json
+    body = json.loads(raw_body)
 
     user_id: UUID | None = body.get("user_id")
     status_str: str | None = body.get("status")

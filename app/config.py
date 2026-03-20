@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     # Supabase auth — at least one of these must be set in non-dev mode
     supabase_jwt_secret: str = ""        # HS256 — from Supabase dashboard → API → JWT Secret
     supabase_jwks_url: str = ""          # RS256 — preferred for production
-    supabase_webhook_secret: str = ""    # For verifying Supabase webhook payloads
+    kyc_webhook_secret: str = ""         # For verifying KYC provider webhook payloads
 
     # Field encryption (AES-256-GCM)
     encryption_key: str = Field(
@@ -37,12 +37,34 @@ class Settings(BaseSettings):
         description="32-byte hex string. Generate: openssl rand -hex 32",
     )
 
-    # Open Banking
+    # Open Banking — TrueLayer
     openbanking_provider: str = "TRUELAYER"
     truelayer_client_id: str = ""
     truelayer_client_secret: str = ""
     truelayer_webhook_secret: str = ""
     truelayer_base_url: str = "https://api.truelayer-sandbox.com"
+    truelayer_auth_url: str = "https://auth.truelayer-sandbox.com"
+    # Merchant account that receives open banking payments (from TrueLayer dashboard)
+    truelayer_merchant_account_id: str = ""
+    # Override redirect URI — defaults to {app_base_url}/api/v1/webhooks/openbanking/...
+    truelayer_redirect_uri: str = ""
+
+    # Card payments — Stripe (Phase 3.8 fallback)
+    stripe_secret_key: str = ""
+    stripe_webhook_secret: str = ""
+    # Override Stripe redirect URI — defaults to {app_base_url}/api/v1/webhooks/stripe/...
+    stripe_redirect_uri: str = ""
+
+    # Card processor — UP Nigeria (up-ng.com)
+    # Leave blank to use the dev stub (DevCardProcessorClient).
+    # Set UP_NIGERIA_API_KEY to activate UPNigeriaClient automatically.
+    up_nigeria_api_key: str = ""
+    up_nigeria_base_url: str = "https://api.up-ng.com"      # confirm with UP Nigeria
+    up_nigeria_card_program_id: str = "ufirst_prepaid_v1"   # set after UP Nigeria onboarding
+    up_nigeria_webhook_secret: str = ""                      # for verifying UP Nigeria webhooks
+
+    # Application base URL — used to build redirect / webhook URIs
+    app_base_url: str = "http://localhost:8000"
 
     # Celery (defaults to redis_url when blank)
     celery_broker_url: str = ""
