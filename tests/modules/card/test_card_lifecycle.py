@@ -32,7 +32,7 @@ async def _create_user(client: AsyncClient, user_id: str, role: str) -> None:
 async def _create_wallet_direct(owner_id: str, currency: str = "GBP") -> str:
     from uuid import UUID as _UUID
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         svc = WalletService(session)
@@ -67,7 +67,7 @@ async def _provision_sponsor_with_beneficiary(
     beneficiary_id = resp.json()["id"]
 
     # Mark beneficiary KYC approved directly via service
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     from app.modules.identity.service import IdentityService
 
@@ -375,7 +375,7 @@ async def test_state_machine_service_level() -> None:
     """
     Service-level state machine tests: every valid and invalid transition.
     """
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     sponsor_id = uuid4()

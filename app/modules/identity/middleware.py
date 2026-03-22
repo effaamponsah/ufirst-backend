@@ -47,11 +47,14 @@ class LazyUserProvisioningMiddleware(BaseHTTPMiddleware):
                 try:
                     async with AsyncSessionFactory() as session:
                         async with session.begin():
-                            await IdentityService(session).get_or_create_user(
+                            db_user = await IdentityService(session).get_or_create_user(
                                 current_user.id,
                                 email=current_user.email,
                                 role=current_user.role,
                             )
+                    # Store DB user on request so get_current_user can use the
+                    # authoritative DB role instead of whatever the JWT carries.
+                    request.state.identity = db_user
                 except UFirstError as exc:
                     return JSONResponse(
                         status_code=exc.http_status,

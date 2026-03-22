@@ -15,7 +15,7 @@ class UserProfile(BaseModel):
     email: str | None
     phone: str | None
     full_name: str | None
-    role: UserRole
+    role: UserRole | None
     kyc_status: KYCStatus
     country: str | None
     beneficiary_relationship: str | None
@@ -45,8 +45,9 @@ class KYCSubmissionResponse(BaseModel):
 class CompleteProfileRequest(BaseModel):
     """Payload for POST /onboarding/complete-profile."""
 
-    email: str | None = None            # Required for phone-OTP signups with no email in JWT
-    country: str | None = None          # ISO 3166-1 alpha-2, e.g. "GB"
+    role: str | None = None              # Self-assignable: "sponsor" only. Others set by system/admin.
+    email: str | None = None             # Required for phone-OTP signups with no email in JWT
+    country: str | None = None           # ISO 3166-1 alpha-2, e.g. "GB"
     phone: str | None = None
     full_name: str | None = None
     beneficiary_relationship: str | None = None  # e.g. "spouse", "parent", "sibling"

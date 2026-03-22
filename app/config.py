@@ -31,6 +31,11 @@ class Settings(BaseSettings):
     supabase_jwks_url: str = ""          # RS256 — preferred for production
     kyc_webhook_secret: str = ""         # For verifying KYC provider webhook payloads
 
+    # Supabase Storage — for KYC document uploads
+    supabase_url: str = ""               # e.g. https://<project>.supabase.co
+    supabase_service_role_key: str = ""  # Service role key (never expose to clients)
+    kyc_bucket: str = "kyc-documents"   # Bucket name in Supabase Storage
+
     # Field encryption (AES-256-GCM)
     encryption_key: str = Field(
         ...,
@@ -38,7 +43,7 @@ class Settings(BaseSettings):
     )
 
     # Open Banking — TrueLayer
-    openbanking_provider: str = "TRUELAYER"
+    openbanking_provider: str = "TRUELAYER"   # "TRUELAYER" | "YAPILY"
     truelayer_client_id: str = ""
     truelayer_client_secret: str = ""
     truelayer_webhook_secret: str = ""
@@ -48,6 +53,18 @@ class Settings(BaseSettings):
     truelayer_merchant_account_id: str = ""
     # Override redirect URI — defaults to {app_base_url}/api/v1/webhooks/openbanking/...
     truelayer_redirect_uri: str = ""
+
+    # Open Banking — Yapily (alternative to TrueLayer)
+    # Set OPENBANKING_PROVIDER=YAPILY and fill these to activate.
+    yapily_application_id: str = ""
+    yapily_application_secret: str = ""
+    yapily_webhook_secret: str = ""
+    yapily_base_url: str = "https://api.yapily.com"
+    # Payee/merchant account that receives payments — required for PIS
+    yapily_payee_name: str = ""
+    yapily_payee_sort_code: str = ""          # UK domestic payments
+    yapily_payee_account_number: str = ""     # UK domestic payments
+    yapily_payee_iban: str = ""               # SEPA / international payments
 
     # Card payments — Stripe (Phase 3.8 fallback)
     stripe_secret_key: str = ""
@@ -65,6 +82,8 @@ class Settings(BaseSettings):
 
     # Application base URL — used to build redirect / webhook URIs
     app_base_url: str = "http://localhost:8000"
+    # Frontend URL — used to redirect the browser after OAuth/bank-link callbacks
+    frontend_url: str = "http://localhost:5173"
 
     # Celery (defaults to redis_url when blank)
     celery_broker_url: str = ""

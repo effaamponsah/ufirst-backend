@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from uuid import UUID
 
 import jwt
-from fastapi import Depends, HTTPException, Security
+from fastapi import Depends, HTTPException, Request, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from app.config import settings
@@ -109,7 +109,7 @@ def verify_token(token: str) -> CurrentUser:
             payload = jwt.decode(
                 token,
                 signing_key.key,
-                algorithms=["RS256"],
+                algorithms=["RS256", "ES256"],
                 audience="authenticated",
             )
         except jwt.ExpiredSignatureError:
@@ -142,14 +142,27 @@ def _payload_to_user(payload: dict) -> CurrentUser:  # type: ignore[type-arg]
 
 
 async def get_current_user(
+    request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
 ) -> CurrentUser:
     if credentials is None:
         raise HTTPException(status_code=401, detail={"code": "AUTHENTICATION_REQUIRED", "message": "Missing Authorization header."})
     try:
-        return verify_token(credentials.credentials)
+        user = verify_token(credentials.credentials)
     except AuthenticationError as exc:
         raise HTTPException(status_code=401, detail={"code": exc.code, "message": exc.message})
+
+    # In dev mode the token role is authoritative — dev tokens exist precisely
+    # so callers can impersonate any role during testing.
+    # In production the DB is the single source of truth: the lazy-provisioning
+    # middleware stores the DB user on request.state.identity and we read the
+    # role from there, ignoring whatever the JWT carries.
+    if not settings.dev_mode:
+        db_user = getattr(request.state, "identity", None)
+        if db_user is not None and db_user.role is not None:
+            user.role = db_user.role if isinstance(db_user.role, str) else db_user.role.value
+
+    return user
 
 
 def require_roles(*roles: str):  # type: ignore[return]

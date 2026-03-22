@@ -24,7 +24,7 @@ from app.modules.wallet.events import (
 )
 from app.modules.wallet.models import BankConnectionStatus
 from app.modules.wallet.openbanking.adapter import PaymentAdapter, get_adapter
-from app.modules.wallet.schemas import BankConnectionResponse, StartBankLinkResponse
+from app.modules.wallet.schemas import BankConnectionResponse, InstitutionResponse, StartBankLinkResponse
 
 log = logging.getLogger(__name__)
 
@@ -48,12 +48,28 @@ class BankConnectionService:
             or f"{settings.app_base_url}/api/v1/webhooks/openbanking/connect-callback"
         )
 
+    async def list_institutions(self) -> list[InstitutionResponse]:
+        institutions = await self._adapter.get_institutions()
+        return [
+            InstitutionResponse(
+                id=i.id,
+                name=i.name,
+                countries=i.countries,
+                logo_url=i.logo_url,
+                supports_payments=i.supports_payments,
+                supports_account_info=i.supports_account_info,
+            )
+            for i in institutions
+        ]
+
     async def create_connection_session(
-        self, sponsor_id: UUID
+        self, sponsor_id: UUID, institution_id: str | None = None
     ) -> StartBankLinkResponse:
         """Start an AIS bank link flow. Returns the auth_link for the sponsor."""
         auth_link = await self._adapter.create_connection_session(
-            redirect_uri=self._redirect_uri()
+            redirect_uri=self._redirect_uri(),
+            user_id=str(sponsor_id),
+            institution_id=institution_id,
         )
         return StartBankLinkResponse(auth_link=auth_link)
 

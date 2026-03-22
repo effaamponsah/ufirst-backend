@@ -54,6 +54,7 @@ class FundingTransferResponse(BaseModel):
     idempotency_key: str
     external_payment_ref: str | None
     failure_reason: str | None
+    payment_state_changed_at: datetime
     created_at: datetime
     updated_at: datetime
 
@@ -122,6 +123,19 @@ class BankConnectionResponse(BaseModel):
     status: str
     consent_expires_at: datetime | None
     created_at: datetime
+
+
+class InstitutionResponse(BaseModel):
+    id: str
+    name: str
+    countries: list[str]
+    logo_url: str | None
+    supports_payments: bool
+    supports_account_info: bool
+
+
+class StartBankLinkRequest(BaseModel):
+    institution_id: str | None = None
 
 
 class StartBankLinkResponse(BaseModel):

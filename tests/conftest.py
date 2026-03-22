@@ -41,7 +41,11 @@ settings.dev_mode = True
 
 @pytest_asyncio.fixture(scope="session")
 async def db_engine():
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(
+        settings.async_database_url,
+        echo=False,
+        connect_args={"statement_cache_size": 0},
+    )
 
     async with engine.begin() as conn:
         for schema in [

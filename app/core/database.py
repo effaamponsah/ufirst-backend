@@ -22,6 +22,9 @@ engine = create_async_engine(
     pool_size=10,
     max_overflow=20,
     pool_pre_ping=True,
+    # Required when connecting via PgBouncer (Supabase pooler, port 6543).
+    # PgBouncer's transaction mode doesn't support prepared statements.
+    connect_args={"statement_cache_size": 0},
 )
 
 AsyncSessionFactory = async_sessionmaker(

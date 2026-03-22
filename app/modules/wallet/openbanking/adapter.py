@@ -41,6 +41,17 @@ class WebhookEvent:
 
 
 @dataclass
+class Institution:
+    id: str
+    name: str
+    countries: list[str]
+    logo_url: str | None = None
+    # Subset of Yapily feature flags relevant to PIS/AIS
+    supports_payments: bool = False
+    supports_account_info: bool = False
+
+
+@dataclass
 class BankAccountInfo:
     external_account_id: str
     account_identifier: str     # IBAN or "sort_code/account_number" — will be encrypted
@@ -101,8 +112,16 @@ class PaymentAdapter(ABC):
     # AIS — Account Information / Bank Connection
 
     @abstractmethod
-    async def create_connection_session(self, *, redirect_uri: str) -> str:
-        """Returns the auth_link for the sponsor to authorise a bank connection."""
+    async def create_connection_session(
+        self, *, redirect_uri: str, user_id: str, institution_id: str | None = None
+    ) -> str:
+        """Returns the auth_link for the sponsor to authorise a bank connection.
+
+        user_id: the sponsor's UUID — passed as applicationUserId so the
+        aggregator echoes it back in the callback query string.
+        institution_id: provider-specific bank identifier (required by Yapily,
+        optional / ignored by TrueLayer which has a built-in bank picker).
+        """
         ...
 
     @abstractmethod
@@ -112,6 +131,17 @@ class PaymentAdapter(ABC):
 
     @abstractmethod
     async def revoke_consent(self, consent_id: str) -> None: ...
+
+    # Institution discovery
+
+    @abstractmethod
+    async def get_institutions(self) -> list[Institution]:
+        """Return the list of banks/institutions the provider supports.
+
+        Returns an empty list for providers that handle institution selection
+        themselves (e.g. TrueLayer's built-in bank picker).
+        """
+        ...
 
 
 # ---------------------------------------------------------------------------
@@ -154,7 +184,9 @@ class DevPaymentAdapter(PaymentAdapter):
     async def refund(self, payment_id: str, *, amount: int, idempotency_key: str) -> str:
         return f"dev_refund_{payment_id}"
 
-    async def create_connection_session(self, *, redirect_uri: str) -> str:
+    async def create_connection_session(
+        self, *, redirect_uri: str, user_id: str, institution_id: str | None = None
+    ) -> str:
         return "https://dev.example.com/connect"
 
     async def complete_connection(self, *, code: str, redirect_uri: str) -> BankAccountInfo:
@@ -172,6 +204,9 @@ class DevPaymentAdapter(PaymentAdapter):
     async def revoke_consent(self, consent_id: str) -> None:
         pass
 
+    async def get_institutions(self) -> list[Institution]:
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Singleton factory
@@ -186,6 +221,9 @@ def _is_configured(payment_method: str) -> bool:
 
     if payment_method == "card":
         return bool(settings.stripe_secret_key)
+    provider = settings.openbanking_provider.upper()
+    if provider == "YAPILY":
+        return bool(settings.yapily_application_id and settings.yapily_application_secret)
     return bool(settings.truelayer_client_id and settings.truelayer_client_secret)
 
 
@@ -219,6 +257,10 @@ def get_adapter(payment_method: str = "open_banking") -> PaymentAdapter:
             from app.modules.wallet.openbanking.client import TrueLayerClient
 
             _adapters[provider] = TrueLayerClient()
+        elif provider == "YAPILY":
+            from app.modules.wallet.openbanking.yapily_client import YapilyClient
+
+            _adapters[provider] = YapilyClient()
         else:
             raise ValueError(f"Unknown open banking provider: {provider}")
     return _adapters[provider]

@@ -31,7 +31,7 @@ async def create_user(
     *,
     user_id: UUID,
     email: str | None,
-    role: UserRole,
+    role: UserRole | None = None,
     phone: str | None = None,
     full_name: str | None = None,
     country: str | None = None,
@@ -61,6 +61,7 @@ async def upsert_profile(
     phone: str | None,
     full_name: str | None,
     beneficiary_relationship: str | None,
+    role: UserRole | None = None,
 ) -> User | None:
     user = await get_user(session, user_id)
     if user is None:
@@ -75,6 +76,8 @@ async def upsert_profile(
         user.full_name = full_name
     if beneficiary_relationship is not None:
         user.beneficiary_relationship = beneficiary_relationship
+    if role is not None:
+        user.role = role
     await session.flush()
     return user
 

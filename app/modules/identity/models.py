@@ -59,8 +59,8 @@ class User(Base):
     email: Mapped[str | None] = mapped_column(String(255), nullable=True, unique=True)
     phone: Mapped[str | None] = mapped_column(String(50))
     full_name: Mapped[str | None] = mapped_column(String(255))
-    role: Mapped[UserRole] = mapped_column(
-        Enum(UserRole, native_enum=False, length=30), nullable=False
+    role: Mapped[UserRole | None] = mapped_column(
+        Enum(UserRole, native_enum=False, length=30), nullable=True
     )
     kyc_status: Mapped[KYCStatus] = mapped_column(
         Enum(KYCStatus, native_enum=False, length=20),

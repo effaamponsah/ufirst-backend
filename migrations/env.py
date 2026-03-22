@@ -92,6 +92,8 @@ async def run_async_migrations() -> None:
         alembic_config.get_section(alembic_config.config_ini_section, {}),
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        # Required for PgBouncer (Supabase pooler) compatibility
+        connect_args={"statement_cache_size": 0},
     )
 
     async with connectable.connect() as connection:

@@ -24,6 +24,7 @@ from app.core.exceptions import AggregatorError
 from app.modules.wallet.openbanking.adapter import (
     BankAccountInfo,
     InitiationResult,
+    Institution,
     PaymentAdapter,
     PaymentStatusResult,
     WebhookEvent,
@@ -278,7 +279,9 @@ class TrueLayerClient(PaymentAdapter):
     # AIS — Bank connections
     # ------------------------------------------------------------------
 
-    async def create_connection_session(self, *, redirect_uri: str) -> str:
+    async def create_connection_session(
+        self, *, redirect_uri: str, user_id: str, institution_id: str | None = None
+    ) -> str:
         """Start AIS bank link flow. Returns the auth_link for the sponsor."""
         token = await self._get_access_token()
         async with httpx.AsyncClient(
@@ -373,3 +376,7 @@ class TrueLayerClient(PaymentAdapter):
                 resp.status_code,
                 consent_id,
             )
+
+    async def get_institutions(self) -> list[Institution]:
+        # TrueLayer embeds its own bank picker in the auth flow — no list needed.
+        return []

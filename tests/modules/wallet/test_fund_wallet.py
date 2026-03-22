@@ -38,7 +38,7 @@ async def _create_user(client: AsyncClient, user_id: str, role: str) -> None:
 async def _create_wallet_direct(owner_id: str, currency: str = "GBP") -> str:
     """Create a wallet directly via the service (bypassing HTTP for setup)."""
     from uuid import UUID as _UUID
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with factory() as session:
         svc = WalletService(session)
@@ -51,7 +51,7 @@ async def _create_wallet_direct(owner_id: str, currency: str = "GBP") -> str:
 async def _get_ledger_balance(wallet_id: str) -> tuple[int, int]:
     """Return (sum_credits, sum_debits) for a wallet from the ledger."""
     from uuid import UUID as _UUID
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     wid = _UUID(wallet_id)
     async with factory() as session:
@@ -125,7 +125,7 @@ async def test_idempotency_key_reuse_with_different_payload_is_conflict() -> Non
     from app.core.exceptions import IdempotencyConflict
     from app.modules.wallet.models import PaymentMethod
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     sponsor_id = uuid4()
@@ -304,7 +304,7 @@ async def test_zero_amount_rejected_at_service() -> None:
     from app.core.exceptions import ValidationError as UFirstValidationError
     from app.modules.wallet.models import PaymentMethod
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     sponsor_id = uuid4()
@@ -338,7 +338,7 @@ async def test_negative_debit_rejected_at_service() -> None:
     """Negative debit would silently increase balance — must be caught."""
     from app.core.exceptions import ValidationError as UFirstValidationError
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
 
     owner_id = uuid4()
@@ -414,7 +414,7 @@ async def test_concurrent_race_same_params_returns_existing() -> None:
     """
     from app.modules.wallet import repository as repo
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     sponsor_id = uuid4()
     idem_key = str(uuid4())
@@ -467,7 +467,7 @@ async def test_concurrent_race_different_params_raises_conflict() -> None:
     from app.core.exceptions import IdempotencyConflict
     from app.modules.wallet import repository as repo
 
-    engine = create_async_engine(settings.async_database_url, echo=False)
+    engine = create_async_engine(settings.async_database_url, echo=False, connect_args={"statement_cache_size": 0})
     factory = async_sessionmaker(engine, expire_on_commit=False)
     sponsor_id = uuid4()
     idem_key = str(uuid4())

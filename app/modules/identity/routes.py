@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.core.auth import CurrentUser, get_current_user, require_roles
+from app.core.storage import SupabaseStorageClient
 from app.core.database import get_db
 from app.modules.identity.models import KYCStatus
 from app.modules.identity.schemas import (
@@ -179,14 +181,25 @@ async def kyc_status(
 
 @router.post("/kyc/submit", status_code=201)
 async def submit_kyc(
-    request: Request,
     current_user: CurrentUser = Depends(get_current_user),
     service: IdentityService = Depends(_get_service),
+    document_front: UploadFile | None = File(default=None),
+    document_back: UploadFile | None = File(default=None),
 ) -> KYCSubmissionResponse:
-    # KYC documents are uploaded directly to object storage by the client.
-    # The client sends back the storage path/reference in the request body.
-    body = await request.json()
-    document_refs: str | None = body.get("document_refs")
+    storage = SupabaseStorageClient()
+    bucket = settings.kyc_bucket
+
+    slots = [("front", document_front), ("back", document_back)]
+    refs: list[str] = []
+    for slot, upload in slots:
+        if upload is None or not upload.filename:
+            continue
+        path = f"{current_user.id}/{slot}/{upload.filename}"
+        contents = await upload.read()
+        url = await storage.upload(bucket, path, contents, upload.filename)
+        refs.append(url)
+
+    document_refs: str | None = json.dumps(refs) if refs else None
     return await service.submit_kyc(current_user.id, document_refs)
 
 
@@ -204,7 +217,6 @@ async def kyc_provider_webhook(
     raw_body = await request.body()
     _verify_kyc_signature(raw_body, x_kyc_signature)
 
-    import json
     body = json.loads(raw_body)
 
     user_id: UUID | None = body.get("user_id")

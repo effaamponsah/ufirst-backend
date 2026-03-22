@@ -97,6 +97,12 @@ def create_app() -> FastAPI:
     # ── Exception handlers ────────────────────────────────────────────────
     register_exception_handlers(app)
 
+    # ── Event subscriptions ───────────────────────────────────────────────
+    from app.core import events
+    from app.modules.identity.events import UserCreated
+    from app.modules.wallet.handlers import on_user_created
+    events.subscribe(UserCreated, on_user_created)
+
     # ── Routers ───────────────────────────────────────────────────────────
     from app.modules.identity.routes import router as identity_router
     from app.modules.wallet.routes import router as wallet_router

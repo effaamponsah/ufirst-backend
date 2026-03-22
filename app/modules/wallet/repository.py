@@ -151,6 +151,17 @@ async def get_funding_transfer_by_idempotency_key(
     return result.scalar_one_or_none()
 
 
+async def get_funding_transfer_by_idempotency_key_only(
+    session: AsyncSession, idempotency_key: str
+) -> FundingTransfer | None:
+    result = await session.execute(
+        select(FundingTransfer).where(
+            FundingTransfer.idempotency_key == idempotency_key,
+        )
+    )
+    return result.scalar_one_or_none()
+
+
 async def create_funding_transfer(
     session: AsyncSession,
     *,

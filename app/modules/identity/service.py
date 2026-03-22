@@ -13,7 +13,9 @@ from uuid import UUID, uuid4
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import events
-from app.core.exceptions import NotFound, PermissionDenied
+from sqlalchemy.exc import IntegrityError
+
+from app.core.exceptions import NotFound, PermissionDenied, ValidationError
 from app.modules.identity import repository as repo
 from app.modules.identity.events import KYCStatusChanged, SponsorBeneficiaryLinked, UserCreated
 from app.modules.identity.models import KYCStatus, LinkStatus, UserRole
@@ -52,24 +54,54 @@ class IdentityService:
 
         Called by the lazy-provisioning middleware on every authenticated
         request, and by route handlers that need the current user's DB record.
+
+        If the JWT carries a valid role in app_metadata it is used as the
+        initial role. Otherwise the user is created with role=None and must
+        set their role via POST /onboarding/complete-profile.
         """
         existing = await repo.get_user(self._session, supabase_uid)
         if existing is not None:
+            # If the DB has no role yet but the JWT now carries one (e.g. an
+            # admin set app_metadata.role in Supabase after provisioning),
+            # adopt the JWT role so the user doesn't have to onboard again.
+            if existing.role is None and role:
+                try:
+                    jwt_role = UserRole(role)
+                    existing.role = jwt_role
+                    await self._session.flush()
+                except ValueError:
+                    pass
             return UserProfile.model_validate(existing)
 
-        try:
-            role_enum = UserRole(role)
-        except ValueError:
-            raise PermissionDenied(f"Unknown role: '{role}'")
+        # Resolve role — accept empty/unknown gracefully (user sets it during onboarding)
+        role_enum: UserRole | None = None
+        if role:
+            try:
+                role_enum = UserRole(role)
+            except ValueError:
+                pass  # Unknown role from JWT — user will pick during onboarding
 
-        user = await repo.create_user(
-            self._session,
-            user_id=supabase_uid,
-            email=email or None,  # "" → NULL; phone-only JWTs and dev tokens have no email
-            role=role_enum,
-        )
+        try:
+            user = await repo.create_user(
+                self._session,
+                user_id=supabase_uid,
+                email=email or None,  # "" → NULL; phone-only JWTs and dev tokens have no email
+                role=role_enum,
+            )
+        except IntegrityError:
+            # Concurrent request already created this user — roll back and read
+            await self._session.rollback()
+            existing = await repo.get_user(self._session, supabase_uid)
+            if existing is not None:
+                return UserProfile.model_validate(existing)
+            raise
+
         await events.publish(UserCreated(user_id=user.id, role=user.role, email=user.email))
         return UserProfile.model_validate(user)
+
+    # Roles a user can assign to themselves during onboarding.
+    # Beneficiaries are created by sponsors; admin/ops roles are set by admins.
+    _SELF_ASSIGNABLE_ROLES = {UserRole.SPONSOR}
 
     async def complete_profile(
         self,
@@ -77,9 +109,35 @@ class IdentityService:
         data: CompleteProfileRequest,
     ) -> UserProfile:
         """
-        Upsert profile fields (country, phone, full_name, beneficiary_relationship)
+        Upsert profile fields (country, phone, full_name, role, beneficiary_relationship)
         onto the skeleton record created by the auth middleware.
+
+        ``role`` is only accepted if the user has no role yet, and only for
+        self-assignable roles (currently just "sponsor").  Beneficiary accounts
+        are created by sponsors, not self-registered.
         """
+        role_enum: UserRole | None = None
+        if data.role is not None:
+            try:
+                role_enum = UserRole(data.role)
+            except ValueError:
+                raise ValidationError(
+                    f"Unknown role: '{data.role}'",
+                    details={"allowed": [r.value for r in self._SELF_ASSIGNABLE_ROLES]},
+                )
+            if role_enum not in self._SELF_ASSIGNABLE_ROLES:
+                raise PermissionDenied(
+                    f"Role '{data.role}' cannot be self-assigned.",
+                    details={"allowed": [r.value for r in self._SELF_ASSIGNABLE_ROLES]},
+                )
+            # Only allow setting a role if the user doesn't already have one
+            existing = await repo.get_user(self._session, user_id)
+            if existing is not None and existing.role is not None:
+                raise ValidationError(
+                    "Role is already set and cannot be changed via this endpoint.",
+                    details={"current_role": existing.role.value},
+                )
+
         user = await repo.upsert_profile(
             self._session,
             user_id,
@@ -88,9 +146,20 @@ class IdentityService:
             phone=data.phone,
             full_name=data.full_name,
             beneficiary_relationship=data.beneficiary_relationship,
+            role=role_enum,
         )
         if user is None:
             raise NotFound(f"User {user_id} not found.")
+
+        # If the user just self-assigned a role, publish UserCreated so subscribers
+        # (e.g. wallet auto-creation) can react. The initial provisioning event
+        # fired with role=None when the skeleton row was created, so this is the
+        # first time the role is known.
+        if role_enum is not None:
+            await events.publish(
+                UserCreated(user_id=user.id, role=user.role, email=user.email)
+            )
+
         return UserProfile.model_validate(user)
 
     # ------------------------------------------------------------------
@@ -152,16 +221,32 @@ class IdentityService:
         if sponsor is None or sponsor.role != UserRole.SPONSOR:
             raise PermissionDenied("Only sponsors can create beneficiaries.")
 
-        beneficiary = await repo.create_user(
-            self._session,
-            user_id=uuid4(),
-            email=data.email or None,
-            role=UserRole.BENEFICIARY,
-            phone=data.phone,
-            full_name=data.full_name,
-            country=data.country,
-            beneficiary_relationship=data.beneficiary_relationship,
-        )
+        # If an email was provided, check it isn't already taken
+        if data.email:
+            existing_by_email = await repo.get_user_by_email(self._session, data.email)
+            if existing_by_email is not None:
+                raise ValidationError(
+                    "A user with this email already exists.",
+                    details={"email": data.email},
+                )
+
+        try:
+            beneficiary = await repo.create_user(
+                self._session,
+                user_id=uuid4(),
+                email=data.email or None,
+                role=UserRole.BENEFICIARY,
+                phone=data.phone,
+                full_name=data.full_name,
+                country=data.country,
+                beneficiary_relationship=data.beneficiary_relationship,
+            )
+        except IntegrityError:
+            raise ValidationError(
+                "A user with this email already exists.",
+                details={"email": data.email},
+            )
+
         await repo.create_link(self._session, sponsor_id, beneficiary.id)
         await events.publish(UserCreated(user_id=beneficiary.id, role=beneficiary.role, email=beneficiary.email))
         await events.publish(SponsorBeneficiaryLinked(sponsor_id=sponsor_id, beneficiary_id=beneficiary.id))

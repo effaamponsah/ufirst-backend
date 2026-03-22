@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header
+from fastapi import APIRouter, Body, Depends, Header
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import CurrentUser, get_current_user, require_roles
@@ -17,7 +17,9 @@ from app.modules.wallet.schemas import (
     FundingStatusResponse,
     FundingTransferResponse,
     InitiateFundingRequest,
+    InstitutionResponse,
     LedgerEntryResponse,
+    StartBankLinkRequest,
     StartBankLinkResponse,
     UpdateFundingStateRequest,
     WalletResponse,
@@ -143,6 +145,106 @@ async def initiate_funding(
     )
 
 
+# ---------------------------------------------------------------------------
+# Bank connections (Phase 3 — open banking AIS)
+# IMPORTANT: these must be registered BEFORE /funding/{transfer_id}/* routes
+# so FastAPI doesn't match "banks" as a transfer_id UUID.
+# ---------------------------------------------------------------------------
+
+
+@router.get(
+    "/funding/banks/institutions",
+    dependencies=[Depends(require_roles("sponsor"))],
+)
+async def list_institutions(
+    service: BankConnectionService = Depends(_get_connection_service),
+) -> list[InstitutionResponse]:
+    """Return the list of banks supported by the active open banking provider.
+
+    For Yapily: returns all institutions with payment/AIS capability flags.
+    For TrueLayer: returns an empty list (bank picker is embedded in the auth flow).
+
+    Results are stable for hours — clients should cache aggressively.
+    """
+    return await service.list_institutions()
+
+
+@router.get(
+    "/funding/banks",
+    dependencies=[Depends(require_roles("sponsor"))],
+)
+async def list_bank_connections(
+    current_user: CurrentUser = Depends(get_current_user),
+    service: BankConnectionService = Depends(_get_connection_service),
+) -> list[BankConnectionResponse]:
+    """List the sponsor's active linked bank accounts."""
+    return await service.list_connections(current_user.id)
+
+
+@router.post(
+    "/funding/banks/link",
+    status_code=201,
+    dependencies=[Depends(require_roles("sponsor"))],
+)
+async def start_bank_link(
+    body: StartBankLinkRequest = Body(default_factory=StartBankLinkRequest),
+    service: BankConnectionService = Depends(_get_connection_service),
+    current_user: CurrentUser = Depends(get_current_user),
+) -> StartBankLinkResponse:
+    """Start the bank account link flow. Returns auth_link for the sponsor to visit.
+
+    institution_id is required when OPENBANKING_PROVIDER=YAPILY. Fetch the list
+    of supported institutions from GET /api/v1/funding/banks/institutions first.
+    """
+    return await service.create_connection_session(
+        current_user.id, institution_id=body.institution_id
+    )
+
+
+@router.post(
+    "/funding/banks/complete",
+    status_code=201,
+    dependencies=[Depends(require_roles("sponsor"))],
+)
+async def complete_bank_link(
+    body: dict,  # type: ignore[type-arg]
+    current_user: CurrentUser = Depends(get_current_user),
+    service: BankConnectionService = Depends(_get_connection_service),
+) -> BankConnectionResponse:
+    """
+    Complete the bank account link after the sponsor returns from the bank
+    redirect.  The mobile app intercepts the deep link, extracts the
+    authorisation code, and calls this endpoint.
+
+    Body: { "code": "<aggregator_auth_code>" }
+    """
+    code: str = body.get("code", "")
+    if not code:
+        from fastapi import HTTPException
+
+        raise HTTPException(status_code=422, detail="Missing 'code' in request body.")
+    return await service.complete_connection(current_user.id, code)
+
+
+@router.delete(
+    "/funding/banks/{connection_id}",
+    status_code=204,
+    dependencies=[Depends(require_roles("sponsor"))],
+)
+async def revoke_bank_connection(
+    connection_id: UUID,
+    current_user: CurrentUser = Depends(get_current_user),
+    service: BankConnectionService = Depends(_get_connection_service),
+) -> None:
+    """Revoke AIS consent and deactivate the linked bank account."""
+    await service.revoke_connection(connection_id, current_user.id)
+
+
+# ---------------------------------------------------------------------------
+# Funding transfer status & management
+# ---------------------------------------------------------------------------
+
+
 @router.get("/funding/{transfer_id}/status")
 async def get_funding_status(
     transfer_id: UUID,
@@ -228,70 +330,3 @@ async def complete_funding(
     return await service.credit_from_funding(transfer_id)
 
 
-# ---------------------------------------------------------------------------
-# Bank connections (Phase 3 — open banking AIS)
-# ---------------------------------------------------------------------------
-
-
-@router.get(
-    "/funding/banks",
-    dependencies=[Depends(require_roles("sponsor"))],
-)
-async def list_bank_connections(
-    current_user: CurrentUser = Depends(get_current_user),
-    service: BankConnectionService = Depends(_get_connection_service),
-) -> list[BankConnectionResponse]:
-    """List the sponsor's active linked bank accounts."""
-    return await service.list_connections(current_user.id)
-
-
-@router.post(
-    "/funding/banks/link",
-    status_code=201,
-    dependencies=[Depends(require_roles("sponsor"))],
-)
-async def start_bank_link(
-    service: BankConnectionService = Depends(_get_connection_service),
-    current_user: CurrentUser = Depends(get_current_user),
-) -> StartBankLinkResponse:
-    """Start the bank account link flow. Returns auth_link for the sponsor to visit."""
-    return await service.create_connection_session(current_user.id)
-
-
-@router.post(
-    "/funding/banks/complete",
-    status_code=201,
-    dependencies=[Depends(require_roles("sponsor"))],
-)
-async def complete_bank_link(
-    body: dict,  # type: ignore[type-arg]
-    current_user: CurrentUser = Depends(get_current_user),
-    service: BankConnectionService = Depends(_get_connection_service),
-) -> BankConnectionResponse:
-    """
-    Complete the bank account link after the sponsor returns from the bank
-    redirect.  The mobile app intercepts the deep link, extracts the
-    authorisation code, and calls this endpoint.
-
-    Body: { "code": "<aggregator_auth_code>" }
-    """
-    code: str = body.get("code", "")
-    if not code:
-        from fastapi import HTTPException
-
-        raise HTTPException(status_code=422, detail="Missing 'code' in request body.")
-    return await service.complete_connection(current_user.id, code)
-
-
-@router.delete(
-    "/funding/banks/{connection_id}",
-    status_code=204,
-    dependencies=[Depends(require_roles("sponsor"))],
-)
-async def revoke_bank_connection(
-    connection_id: UUID,
-    current_user: CurrentUser = Depends(get_current_user),
-    service: BankConnectionService = Depends(_get_connection_service),
-) -> None:
-    """Revoke AIS consent and deactivate the linked bank account."""
-    await service.revoke_connection(connection_id, current_user.id)

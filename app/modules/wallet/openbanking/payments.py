@@ -104,6 +104,12 @@ class PaymentInitiationService:
                 settings.stripe_redirect_uri
                 or f"{settings.app_base_url}/api/v1/webhooks/stripe/payment-status"
             )
+        # Yapily PIS redirects the browser back after bank auth (GET).
+        # TrueLayer sends a server-to-server webhook (POST).
+        # Use separate callback endpoints so each gets the right HTTP method.
+        provider = settings.openbanking_provider.upper()
+        if provider == "YAPILY":
+            return f"{settings.app_base_url}/api/v1/webhooks/openbanking/payment-callback"
         return (
             settings.truelayer_redirect_uri
             or f"{settings.app_base_url}/api/v1/webhooks/openbanking/payment-status"
@@ -200,6 +206,20 @@ class PaymentInitiationService:
             return transfer_response.id, None
 
         # 5. Call aggregator
+        #
+        # bank_account_id from the frontend is the internal connection UUID.
+        # Yapily needs the institution slug (provider_id, e.g. "monzo-sandbox").
+        # Resolve it here so the adapter always receives the aggregator-native id.
+        aggregator_bank_id: str | None = bank_account_id
+        if bank_account_id and payment_method == PaymentMethod.OPEN_BANKING:
+            try:
+                conn_uuid = UUID(bank_account_id)
+                connection = await repo.get_bank_connection(self._session, conn_uuid)
+                if connection is not None:
+                    aggregator_bank_id = connection.provider_id
+            except (ValueError, AttributeError):
+                pass  # not a UUID — pass through as-is
+
         adapter = self._adapter_for(payment_method)
         try:
             result = await adapter.initiate(
@@ -208,7 +228,7 @@ class PaymentInitiationService:
                 beneficiary_name="U-FirstSupport",
                 idempotency_key=idempotency_key,
                 redirect_uri=self._redirect_uri(payment_method),
-                bank_account_id=bank_account_id,
+                bank_account_id=aggregator_bank_id,
             )
         except AggregatorError:
             # Transfer stays in INITIATED — client retries with same idempotency key
