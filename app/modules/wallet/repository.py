@@ -108,6 +108,61 @@ async def debit_wallet(
     return entry
 
 
+async def reserve_balance(
+    session: AsyncSession,
+    wallet: Wallet,
+    *,
+    amount: int,
+    reference_type: str,
+    reference_id: UUID,
+) -> None:
+    """Move amount from available to reserved. No ledger entry — authorization hold only."""
+    wallet.available_balance -= amount
+    wallet.reserved_balance += amount
+    await session.flush()
+
+
+async def release_reserve(
+    session: AsyncSession,
+    wallet: Wallet,
+    *,
+    amount: int,
+    reference_type: str,
+    reference_id: UUID,
+) -> None:
+    """Release a reserved hold back to available balance. No ledger entry."""
+    wallet.reserved_balance -= amount
+    wallet.available_balance += amount
+    await session.flush()
+
+
+async def settle_reserve(
+    session: AsyncSession,
+    wallet: Wallet,
+    *,
+    amount: int,
+    reference_type: str,
+    reference_id: UUID,
+    description: str | None = None,
+) -> LedgerEntry:
+    """Convert reserved hold to a final DEBIT ledger entry at clearing time."""
+    wallet.reserved_balance -= amount
+    entry = LedgerEntry(
+        wallet_id=wallet.id,
+        entry_type=EntryType.DEBIT,
+        amount=amount,
+        currency=wallet.currency,
+        # available_balance is unchanged by settle; reflects the post-auth state
+        balance_after=wallet.available_balance,
+        reference_type=reference_type,
+        reference_id=reference_id,
+        description=description,
+    )
+    session.add(entry)
+    await session.flush()
+    return entry
+
+
 async def list_ledger_entries(
     session: AsyncSession,
     wallet_id: UUID,

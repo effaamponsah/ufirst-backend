@@ -96,7 +96,7 @@ class IdentityService:
                 return UserProfile.model_validate(existing)
             raise
 
-        await events.publish(UserCreated(user_id=user.id, role=user.role, email=user.email))
+        await events.publish(UserCreated(user_id=user.id, role=user.role, email=user.email, country=user.country))
         return UserProfile.model_validate(user)
 
     # Roles a user can assign to themselves during onboarding.
@@ -157,7 +157,7 @@ class IdentityService:
         # first time the role is known.
         if role_enum is not None:
             await events.publish(
-                UserCreated(user_id=user.id, role=user.role, email=user.email)
+                UserCreated(user_id=user.id, role=user.role, email=user.email, country=user.country)
             )
 
         return UserProfile.model_validate(user)
@@ -248,7 +248,7 @@ class IdentityService:
             )
 
         await repo.create_link(self._session, sponsor_id, beneficiary.id)
-        await events.publish(UserCreated(user_id=beneficiary.id, role=beneficiary.role, email=beneficiary.email))
+        await events.publish(UserCreated(user_id=beneficiary.id, role=beneficiary.role, email=beneficiary.email, country=beneficiary.country))
         await events.publish(SponsorBeneficiaryLinked(sponsor_id=sponsor_id, beneficiary_id=beneficiary.id))
         return UserProfile.model_validate(beneficiary)
 

@@ -121,7 +121,7 @@ class StripeClient(PaymentAdapter):
             auth_link=data["client_secret"],
         )
 
-    async def check_status(self, payment_id: str) -> PaymentStatusResult:
+    async def check_status(self, payment_id: str, *, consent_token: str | None = None) -> PaymentStatusResult:
         resp = await self._request("GET", f"/v1/payment_intents/{payment_id}")
         if resp.status_code == 404:
             raise AggregatorError(
@@ -241,7 +241,13 @@ class StripeClient(PaymentAdapter):
     # AIS — not supported by Stripe
     # ------------------------------------------------------------------
 
-    async def create_connection_session(self, *, redirect_uri: str) -> str:
+    async def create_connection_session(
+        self,
+        *,
+        redirect_uri: str,
+        user_id: str,
+        institution_id: str | None = None,
+    ) -> str:
         raise NotImplementedError("Bank connection sessions are not supported by Stripe.")
 
     async def complete_connection(
@@ -251,3 +257,6 @@ class StripeClient(PaymentAdapter):
 
     async def revoke_consent(self, consent_id: str) -> None:
         raise NotImplementedError("Consent revocation is not supported by Stripe.")
+
+    async def get_institutions(self) -> list:  # type: ignore[type-arg]
+        return []

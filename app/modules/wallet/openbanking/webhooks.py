@@ -135,9 +135,6 @@ async def yapily_payment_callback(
                 transfer.id, transfer.payment_state,
             )
 
-            # Store auth_request_id before executing (execute_payment will overwrite it)
-            auth_request_id: str = transfer.external_payment_ref or ""
-
             payment_id, _status = await client.execute_payment(
                 amount=transfer.source_amount,
                 currency=transfer.source_currency,
@@ -146,24 +143,12 @@ async def yapily_payment_callback(
                 consent_token=consent_token,
             )
 
-            # Poll Yapily once — in sandbox the payment completes immediately.
-            # In production the webhook advances from AUTHORIZING to COMPLETED.
-            try:
-                status_result = await client.check_status(auth_request_id or payment_id)
-                already_settled = status_result.status == "executed"
-                log.info(
-                    "Yapily post-execute status check payment_id=%s status=%s",
-                    payment_id, status_result.status,
-                )
-            except Exception:
-                log.warning("Yapily post-execute status check failed — leaving at AUTHORIZING")
-                already_settled = False
-
-            new_state = PaymentState.AWAITING_SETTLEMENT if already_settled else PaymentState.AUTHORIZING
+            # POST /payments returned 200 — Yapily has accepted the payment.
+            # Advance to AWAITING_SETTLEMENT immediately.
             await wallet_repo.update_funding_transfer_state(
                 session,
                 transfer,
-                new_state=new_state,
+                new_state=PaymentState.AWAITING_SETTLEMENT,
                 external_payment_ref=payment_id,
             )
             await session.commit()
@@ -172,19 +157,32 @@ async def yapily_payment_callback(
             source_currency = transfer.source_currency
 
         log.info(
-            "Yapily payment executed transfer_id=%s yapily_payment_id=%s settled=%s",
-            transfer_id, payment_id, already_settled,
+            "Yapily payment submitted transfer_id=%s yapily_payment_id=%s",
+            transfer_id, payment_id,
         )
 
-        # If Yapily already confirmed the payment, credit the wallet now.
-        # (In production this is done by the webhook handler instead.)
-        if already_settled:
+        # Credit the wallet inline.
+        #
+        # Yapily webhooks are currently in private beta so we complete the
+        # transfer here after a successful execute_payment(). In production
+        # once webhooks are enabled, the webhook handler will attempt to call
+        # credit_from_funding() again — but it's idempotent: the SERIALIZABLE
+        # guard in credit_from_funding raises InvalidStateTransition if the
+        # transfer is already COMPLETED, which the webhook handler catches and
+        # ignores.
+        try:
             from app.modules.wallet.service import WalletService
-            async with AsyncSessionFactory() as session:
-                svc = WalletService(session)
+            async with AsyncSessionFactory() as credit_session:
+                svc = WalletService(credit_session)
                 await svc.credit_from_funding(transfer_id)
-                await session.commit()
+                await credit_session.commit()
             log.info("Wallet credited inline for transfer_id=%s", transfer_id)
+        except Exception as exc:
+            log.error(
+                "Inline wallet credit failed for transfer_id=%s: %s — "
+                "transfer stays at AWAITING_SETTLEMENT; use /complete to retry",
+                transfer_id, exc,
+            )
 
         return RedirectResponse(
             f"{frontend_url}/fund/callback"

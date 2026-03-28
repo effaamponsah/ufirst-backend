@@ -14,15 +14,38 @@ from app.modules.identity.models import UserRole
 
 log = logging.getLogger(__name__)
 
-# Default currency for new sponsor wallets. Sponsors fund in GBP; beneficiary
-# wallets are created separately when a card is issued (in their local currency).
 _SPONSOR_WALLET_CURRENCY = "GBP"
+
+# Map ISO 3166-1 alpha-2 country codes to currency codes for beneficiary wallets.
+_COUNTRY_CURRENCY: dict[str, str] = {
+    "NG": "NGN",
+    "GH": "GHS",
+    "KE": "KES",
+    "ZA": "ZAR",
+    "UG": "UGX",
+    "TZ": "TZS",
+    "SN": "XOF",
+    "CI": "XOF",
+}
+_DEFAULT_BENEFICIARY_CURRENCY = "NGN"
+
+
+def _beneficiary_currency(country: str | None) -> str:
+    if country is None:
+        return _DEFAULT_BENEFICIARY_CURRENCY
+    return _COUNTRY_CURRENCY.get(country.upper(), _DEFAULT_BENEFICIARY_CURRENCY)
 
 
 async def on_user_created(event: UserCreated) -> None:
-    """Auto-create a GBP wallet for every new sponsor."""
-    if event.role != UserRole.SPONSOR:
+    """Auto-create a wallet for every new sponsor (GBP) or beneficiary (local currency)."""
+    if event.role not in (UserRole.SPONSOR, UserRole.BENEFICIARY):
         return
+
+    currency = (
+        _SPONSOR_WALLET_CURRENCY
+        if event.role == UserRole.SPONSOR
+        else _beneficiary_currency(event.country)
+    )
 
     try:
         from app.core.database import AsyncSessionFactory
@@ -32,15 +55,17 @@ async def on_user_created(event: UserCreated) -> None:
             svc = WalletService(session)
             wallet = await svc.create_wallet(
                 owner_id=event.user_id,
-                currency=_SPONSOR_WALLET_CURRENCY,
+                currency=currency,
             )
             await session.commit()
             log.info(
-                "Auto-created wallet %s for new sponsor %s",
+                "Auto-created %s wallet %s for new %s %s",
+                currency,
                 wallet.id,
+                event.role,
                 event.user_id,
             )
     except Exception:
         log.exception(
-            "Failed to auto-create wallet for sponsor %s", event.user_id
+            "Failed to auto-create wallet for %s %s", event.role, event.user_id
         )

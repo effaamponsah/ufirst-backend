@@ -346,3 +346,105 @@ class WalletService:
             )
         )
         return WalletResponse.model_validate(wallet)
+
+    async def reserve_balance(
+        self,
+        wallet_id: UUID,
+        *,
+        amount: int,
+        reference_type: str,
+        reference_id: UUID,
+    ) -> WalletResponse:
+        """Move amount from available to reserved. Used for card authorization holds."""
+        if amount <= 0:
+            raise ValidationError(
+                "Reserve amount must be a positive integer.",
+                details={"amount": amount},
+            )
+        wallet = await repo.get_wallet(self._session, wallet_id)
+        if wallet is None:
+            raise NotFound(f"Wallet {wallet_id} not found.")
+        if wallet.status != WalletStatus.ACTIVE:
+            raise InvalidStateTransition(
+                f"Wallet is {wallet.status.value}, not ACTIVE.",
+                details={"wallet_id": str(wallet_id)},
+            )
+        if wallet.available_balance < amount:
+            raise InsufficientBalance(
+                "Insufficient balance.",
+                details={
+                    "wallet_id": str(wallet_id),
+                    "available": wallet.available_balance,
+                    "requested": amount,
+                },
+            )
+        await repo.reserve_balance(
+            self._session,
+            wallet,
+            amount=amount,
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+        return WalletResponse.model_validate(wallet)
+
+    async def release_reserve(
+        self,
+        wallet_id: UUID,
+        *,
+        amount: int,
+        reference_type: str,
+        reference_id: UUID,
+    ) -> WalletResponse:
+        """Release a reserved hold. Used for card reversals."""
+        wallet = await repo.get_wallet(self._session, wallet_id)
+        if wallet is None:
+            raise NotFound(f"Wallet {wallet_id} not found.")
+        if wallet.reserved_balance < amount:
+            raise ValidationError(
+                "Reserve balance less than release amount.",
+                details={
+                    "wallet_id": str(wallet_id),
+                    "reserved": wallet.reserved_balance,
+                    "requested": amount,
+                },
+            )
+        await repo.release_reserve(
+            self._session,
+            wallet,
+            amount=amount,
+            reference_type=reference_type,
+            reference_id=reference_id,
+        )
+        return WalletResponse.model_validate(wallet)
+
+    async def settle_reserve(
+        self,
+        wallet_id: UUID,
+        *,
+        amount: int,
+        reference_type: str,
+        reference_id: UUID,
+        description: str | None = None,
+    ) -> WalletResponse:
+        """Convert a reserved hold to a permanent DEBIT ledger entry. Used at card clearing."""
+        wallet = await repo.get_wallet(self._session, wallet_id)
+        if wallet is None:
+            raise NotFound(f"Wallet {wallet_id} not found.")
+        if wallet.reserved_balance < amount:
+            raise ValidationError(
+                "Reserve balance less than settle amount.",
+                details={
+                    "wallet_id": str(wallet_id),
+                    "reserved": wallet.reserved_balance,
+                    "requested": amount,
+                },
+            )
+        await repo.settle_reserve(
+            self._session,
+            wallet,
+            amount=amount,
+            reference_type=reference_type,
+            reference_id=reference_id,
+            description=description,
+        )
+        return WalletResponse.model_validate(wallet)

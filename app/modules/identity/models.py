@@ -60,10 +60,10 @@ class User(Base):
     phone: Mapped[str | None] = mapped_column(String(50))
     full_name: Mapped[str | None] = mapped_column(String(255))
     role: Mapped[UserRole | None] = mapped_column(
-        Enum(UserRole, native_enum=False, length=30), nullable=True
+        Enum(UserRole, native_enum=False, length=30, values_callable=lambda x: [e.value for e in x]), nullable=True
     )
     kyc_status: Mapped[KYCStatus] = mapped_column(
-        Enum(KYCStatus, native_enum=False, length=20),
+        Enum(KYCStatus, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=KYCStatus.PENDING,
         server_default=KYCStatus.PENDING.value,
@@ -99,7 +99,7 @@ class KYCSubmission(Base):
         nullable=False,
     )
     status: Mapped[KYCSubmissionStatus] = mapped_column(
-        Enum(KYCSubmissionStatus, native_enum=False, length=20),
+        Enum(KYCSubmissionStatus, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=KYCSubmissionStatus.PENDING,
     )
@@ -138,7 +138,7 @@ class SponsorBeneficiaryLink(Base):
         nullable=False,
     )
     status: Mapped[LinkStatus] = mapped_column(
-        Enum(LinkStatus, native_enum=False, length=20),
+        Enum(LinkStatus, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=LinkStatus.ACTIVE,
     )

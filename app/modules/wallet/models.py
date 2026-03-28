@@ -71,7 +71,7 @@ class Wallet(Base):
         Integer(), nullable=False, default=0, server_default="0"
     )
     status: Mapped[WalletStatus] = mapped_column(
-        Enum(WalletStatus, native_enum=False, length=20),
+        Enum(WalletStatus, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=WalletStatus.ACTIVE,
         server_default=WalletStatus.ACTIVE.value,
@@ -107,7 +107,7 @@ class LedgerEntry(Base):
         nullable=False,
     )
     entry_type: Mapped[EntryType] = mapped_column(
-        Enum(EntryType, native_enum=False, length=10), nullable=False
+        Enum(EntryType, native_enum=False, length=10, values_callable=lambda x: [e.value for e in x]), nullable=False
     )
     amount: Mapped[int] = mapped_column(Integer(), nullable=False)   # always positive
     currency: Mapped[str] = mapped_column(String(3), nullable=False)
@@ -141,10 +141,10 @@ class FundingTransfer(Base):
         nullable=False,
     )
     payment_method: Mapped[PaymentMethod] = mapped_column(
-        Enum(PaymentMethod, native_enum=False, length=20), nullable=False
+        Enum(PaymentMethod, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]), nullable=False
     )
     payment_state: Mapped[PaymentState] = mapped_column(
-        Enum(PaymentState, native_enum=False, length=30),
+        Enum(PaymentState, native_enum=False, length=30, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=PaymentState.INITIATED,
         server_default=PaymentState.INITIATED.value,
@@ -217,7 +217,7 @@ class SponsorBankConnection(Base):
         DateTime(timezone=True)
     )
     status: Mapped[BankConnectionStatus] = mapped_column(
-        Enum(BankConnectionStatus, native_enum=False, length=20),
+        Enum(BankConnectionStatus, native_enum=False, length=20, values_callable=lambda x: [e.value for e in x]),
         nullable=False,
         default=BankConnectionStatus.ACTIVE,
         server_default=BankConnectionStatus.ACTIVE.value,

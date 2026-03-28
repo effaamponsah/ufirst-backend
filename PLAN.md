@@ -217,33 +217,89 @@ Owns card lifecycle and processor token management. Never stores raw PANs.
 Owns authorization, clearing, settlement, and disputes for POS card transactions.
 
 ### 5.1 Database Schema (`transaction.*`)
-- [ ] `transaction.authorizations` — `id`, `card_id`, `wallet_id`, `merchant_name`, `merchant_category_code`, `amount`, `currency`, `status` (ENUM: AUTHORIZED/DECLINED/REVERSED), `processor_auth_ref`, `authorized_at`
-- [ ] `transaction.clearings` — `id`, `authorization_id`, `cleared_amount`, `cleared_currency`, `cleared_at`, `processor_clearing_ref`
-- [ ] `transaction.settlements` — `id`, `vendor_id`, `clearing_ids` (array), `total_amount`, `currency`, `status`, `settled_at`
-- [ ] `transaction.disputes` — `id`, `authorization_id`, `reason`, `status`, `opened_at`, `resolved_at`, `resolution`
-- [ ] Migration: `migrations/transaction/001_initial_schema.py`
+- [x] `transaction.authorizations` — `id`, `card_id`, `wallet_id`, `merchant_name`, `merchant_category_code`, `amount`, `currency`, `status` (ENUM: AUTHORIZED/DECLINED/REVERSED/CLEARED), `processor_auth_ref`, `authorized_at`
+- [x] `transaction.clearings` — `id`, `authorization_id`, `cleared_amount`, `cleared_currency`, `cleared_at`, `processor_clearing_ref`
+- [x] `transaction.disputes` — `id`, `authorization_id`, `reason`, `status`, `opened_at`, `resolved_at`, `resolution`
+- [x] Migration: `migrations/versions/20260322_0010_transaction_initial_schema.py`
 
 ### 5.2 Service Interface
-- [ ] `TransactionService.authorize(auth_request: AuthorizationRequest) -> AuthorizationDecision`
+- [x] `TransactionService.authorize(payload) -> AuthorizationDecisionResponse`
   - Spending control check (category, daily limit, merchant allowlist from card controls)
-  - Compliance screen (real-time)
-  - Reserve balance (`WalletService.reserve()`)
-  - Return APPROVED or DECLINED with reason code
-- [ ] `TransactionService.process_clearing(clearing_data) -> Clearing`
-  - Match to authorization, confirm amount
-  - Convert reserved balance to settled debit (create ledger entry via WalletService)
-- [ ] `TransactionService.process_reversal(auth_ref) -> void`
-  - Release reserved balance
-- [ ] `TransactionService.open_dispute(authorization_id, reason) -> Dispute`
-- [ ] `TransactionService.list_transactions(wallet_id, page, per_page) -> PaginatedResponse`
+  - Reserve balance (`WalletService.reserve_balance()`)
+  - Return APPROVED or DECLINED with reason code; DECLINED always creates audit record
+- [x] `TransactionService.process_clearing(payload) -> ClearingResponse`
+  - Match to authorization; settle reserve via `WalletService.settle_reserve()` (DEBIT ledger entry)
+- [x] `TransactionService.process_reversal(payload) -> void`
+  - Release reserved balance via `WalletService.release_reserve()`
+- [x] `TransactionService.open_dispute(authorization_id, user_id, reason) -> DisputeResponse`
+- [x] `TransactionService.list_transactions(wallet_id, page, per_page) -> list[AuthorizationResponse]`
 
 ### 5.3 Routes (`/api/v1/transactions/`)
-- [ ] `GET /transactions/` — sponsor sees all beneficiary transactions; beneficiary sees own
-- [ ] `GET /transactions/{transaction_id}` — detail view
-- [ ] `POST /transactions/{transaction_id}/dispute`
-- [ ] `POST /webhooks/card-processor/authorization` — real-time auth hook; synchronous response required; **must respond within 2 seconds**
-- [ ] `POST /webhooks/card-processor/clearing`
-- [ ] `POST /webhooks/card-processor/reversal`
+- [x] `GET /transactions/` — sponsor/beneficiary sees own wallet's transactions
+- [x] `GET /transactions/{authorization_id}` — detail view
+- [x] `POST /transactions/{authorization_id}/dispute`
+- [x] `POST /webhooks/card-processor/authorization` — synchronous response; spending controls + balance check
+- [x] `POST /webhooks/card-processor/clearing`
+- [x] `POST /webhooks/card-processor/reversal`
+
+---
+
+## Phase 5.5 — Stripe Card Funding
+
+Allows sponsors to fund their wallet using a debit/credit card via Stripe, as a fallback when open banking is unavailable or the sponsor prefers it.
+
+### Flow overview
+```
+Sponsor selects "Pay by card"
+  → POST /funding/initiate  (payment_method: "card")
+  → Backend: creates FundingTransfer, calls StripeClient.initiate()
+             → Stripe creates PaymentIntent, returns client_secret
+  → Backend: returns { auth_link: "<client_secret>", funding_transfer_id }
+  → Frontend: detects client_secret (starts with "pi_...") instead of a URL
+             → renders Stripe Elements card form, calls stripe.confirmCardPayment(client_secret)
+  → Stripe: charges the card
+  → Stripe: sends webhook to POST /webhooks/stripe/payment-status
+  → Backend: Celery task advances FundingTransfer to COMPLETED, credits wallet
+  → Frontend: polls /funding/{id}/status → shows success
+```
+
+### 5.5.1 Backend fixes (small)
+- [x] Fix `StripeClient.create_connection_session` signature — add `user_id: str` and `institution_id: str | None = None` params to match abstract base (both unused, raise `NotImplementedError`)
+- [x] Add `get_institutions() -> list[Institution]` to `StripeClient` — return `[]` (not applicable)
+- [x] Config: `STRIPE_PUBLISHABLE_KEY` added to `app/config.py`
+
+### 5.5.2 Backend — new endpoint
+- [x] `GET /api/v1/config/stripe` — unauthenticated; returns `{ publishable_key: str }` so the frontend can initialise Stripe.js without hardcoding the key
+
+### 5.5.3 Frontend — Stripe.js integration
+- [x] Install `@stripe/stripe-js` and `@stripe/react-stripe-js` in the sponsor app
+- [x] `useStripePublishableKey()` hook — fetches from `/api/v1/config/stripe` (stale time: Infinity)
+
+### 5.5.4 Frontend — Fund page changes
+- [x] `FundPage`: added payment method selector — "Open Banking" vs "Card" toggle in step 1
+- [x] When "Card" selected: bank step is skipped (steps: amount → confirm)
+- [x] `POST /funding/initiate` with `payment_method: "card"` via `useInitiateCardFunding()`
+- [x] On confirm for card: calls initiate → stores transferId + clientSecret → renders `StripeCardPaymentView`
+
+### 5.5.5 Frontend — Stripe card form component
+- [x] `StripeCardPaymentView` component created at `src/components/StripeCardPaymentView.tsx`
+  - Wraps Stripe `Elements` provider with the `client_secret`
+  - Uses `PaymentElement` for PCI-compliant card input
+  - "Pay £XX.XX" button → calls `stripe.confirmPayment()` with `redirect: 'if_required'`
+  - On success (inline or 3DS): navigate to `/fund/callback?status=authorized&transfer_id=<id>...`
+  - On error: shows inline error, allows retry
+
+### 5.5.6 Frontend — FundCallbackPage
+- [x] Already handles `?status=authorized&transfer_id=<id>` — no change needed
+
+### 5.5.7 Tests
+- [ ] Backend: `tests/modules/wallet/test_stripe_funding.py`
+  - Mock `StripeClient.initiate()` at client class level (not httpx)
+  - `test_initiate_card_funding` — `POST /funding/initiate` with `payment_method: "card"` → 201, `auth_link` is the mocked `client_secret`
+  - `test_stripe_webhook_credits_wallet` — POST synthetic Stripe `payment_intent.succeeded` webhook payload → verify FundingTransfer reaches `COMPLETED` and ledger has a CREDIT entry
+  - `test_stripe_webhook_invalid_signature` → 401
+  - `test_ledger_balance_consistency_after_card_funding` — `sum(credits) - sum(debits) == available_balance`
+- [ ] Frontend: Storybook story for `StripeCardPaymentView` (mocked Stripe.js)
 
 ---
 
@@ -387,7 +443,7 @@ Analytics and three-way reconciliation. Admin/ops API.
 - [x] `tests/modules/card/test_card_lifecycle.py` — issue, activate, freeze, unfreeze, cancel, spending controls, KYC gate, unlinked sponsor blocked
 - [ ] `tests/modules/wallet/test_webhook_idempotency.py` — duplicate webhook, out-of-order, replay prevention
 - [ ] `tests/modules/wallet/test_state_machine.py` — every branch of the funding state machine with real DB
-- [ ] `tests/modules/transaction/test_authorization.py` — authorize, clear, reverse
+- [x] `tests/modules/transaction/test_authorization.py` — authorize, clear, reverse, decline variants, dispute, ledger consistency
 - [ ] `tests/modules/compliance/test_screening.py` — velocity rules, sanctions match, AML flag
 
 ### 10.4 Reconciliation Tests

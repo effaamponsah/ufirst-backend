@@ -45,7 +45,8 @@ from app.modules.wallet.openbanking.adapter import (
 log = logging.getLogger(__name__)
 
 # Yapily payment request status → normalised internal status
-_PAYMENT_STATUS_MAP: dict[str, str] = {
+# Used by GET /payment-requests/{id} (auth request object — step 1)
+_PAYMENT_REQUEST_STATUS_MAP: dict[str, str] = {
     "awaiting_authorization": "pending",
     "authorised": "pending",
     "completed": "executed",
@@ -53,6 +54,21 @@ _PAYMENT_STATUS_MAP: dict[str, str] = {
     "rejected": "rejected",
     "expired": "failed",
     "cancelled": "failed",
+}
+
+# Yapily payment details status → normalised internal status
+# Used by GET /payments/{paymentId}/details (executed payment — step 3)
+# Yapily returns uppercase values here: PENDING, COMPLETED, FAILED, etc.
+_PAYMENT_DETAILS_STATUS_MAP: dict[str, str] = {
+    "pending": "pending",
+    "completed": "executed",
+    "failed": "failed",
+    "rejected": "failed",
+    "expired": "failed",
+    "cancelled": "failed",
+    "initiated": "pending",
+    "processing": "pending",
+    "unknown": "pending",
 }
 
 # Yapily webhook event type → normalised internal event type
@@ -303,9 +319,29 @@ class YapilyClient(PaymentAdapter):
         log.info("Yapily execute_payment OK payment_id=%s status=%s", payment_id, status)
         return payment_id, status
 
-    async def check_status(self, payment_id: str) -> PaymentStatusResult:
-        log.debug("Yapily check_status payment_id=%s", payment_id)
-        resp = await self._request("GET", f"/payment-requests/{payment_id}")
+    async def check_status(
+        self, payment_id: str, *, consent_token: str | None = None
+    ) -> PaymentStatusResult:
+        """Poll the executed payment status via GET /payments/{paymentId}/details.
+
+        This endpoint reflects the state of the payment created by POST /payments
+        (step 3 of the PIS flow). It is distinct from GET /payment-requests/{id}
+        which only tracks the authorisation request (step 1).
+
+        Yapily requires the same Consent token used in execute_payment() to be
+        sent here — pass consent_token from the payment callback.
+
+        Yapily advises against high-frequency polling — use webhooks in production.
+        For sandbox / local dev where webhooks are unavailable, a single check
+        immediately after execute_payment() is sufficient.
+        """
+        log.debug("Yapily check_status payment_id=%s has_token=%s", payment_id, bool(consent_token))
+        extra: dict[str, str] = {}
+        if consent_token:
+            extra["Consent"] = consent_token
+        resp = await self._request(
+            "GET", f"/payments/{payment_id}/details", extra_headers=extra or None
+        )
         if resp.status_code == 404:
             log.warning("Yapily payment not found payment_id=%s", payment_id)
             raise AggregatorError(
@@ -318,13 +354,21 @@ class YapilyClient(PaymentAdapter):
                 payment_id, resp.status_code, resp.text[:300],
             )
             raise AggregatorError(
-                "Yapily get payment-request failed.",
+                "Yapily get payment details failed.",
                 details={"status": resp.status_code},
             )
         data = resp.json().get("data", {})
-        raw_status: str = data.get("paymentResponses", [{}])[0].get("status", "") or data.get("status", "")
-        normalised = _PAYMENT_STATUS_MAP.get(raw_status.lower(), "pending")
-        failure_reason: str | None = data.get("failureReason") or data.get("error")
+        # Status is at data.status (uppercase: PENDING, COMPLETED, FAILED, …)
+        # statusDetails.status carries the same value with more detail.
+        raw_status: str = (
+            data.get("statusDetails", {}).get("status")
+            or data.get("status", "")
+        )
+        normalised = _PAYMENT_DETAILS_STATUS_MAP.get(raw_status.lower(), "pending")
+        failure_reason: str | None = (
+            data.get("statusDetails", {}).get("statusReason")
+            or data.get("failureReason")
+        )
         log.info(
             "Yapily check_status payment_id=%s raw=%s normalised=%s",
             payment_id, raw_status, normalised,

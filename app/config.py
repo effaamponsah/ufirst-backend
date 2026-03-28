@@ -68,6 +68,7 @@ class Settings(BaseSettings):
 
     # Card payments — Stripe (Phase 3.8 fallback)
     stripe_secret_key: str = ""
+    stripe_publishable_key: str = ""
     stripe_webhook_secret: str = ""
     # Override Stripe redirect URI — defaults to {app_base_url}/api/v1/webhooks/stripe/...
     stripe_redirect_uri: str = ""

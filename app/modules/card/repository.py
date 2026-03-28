@@ -30,6 +30,15 @@ async def get_card_by_owner(session: AsyncSession, owner_id: UUID) -> Card | Non
     return result.scalar_one_or_none()
 
 
+async def get_card_by_processor_token(
+    session: AsyncSession, processor_token: str
+) -> Card | None:
+    result = await session.execute(
+        select(Card).where(Card.processor_token == processor_token)
+    )
+    return result.scalar_one_or_none()
+
+
 async def get_card_for_wallet(session: AsyncSession, wallet_id: UUID) -> Card | None:
     result = await session.execute(
         select(Card)

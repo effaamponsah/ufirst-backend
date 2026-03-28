@@ -11,6 +11,7 @@ class UserCreated(BaseModel):
     user_id: UUID
     role: UserRole | None
     email: str | None
+    country: str | None = None
 
 
 class KYCStatusChanged(BaseModel):

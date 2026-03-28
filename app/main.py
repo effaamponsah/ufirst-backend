@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import logging.config
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -15,10 +16,27 @@ from app.core.redis import close_redis
 
 log = logging.getLogger(__name__)
 
-logging.basicConfig(
-    level=logging.DEBUG if settings.debug else logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s %(message)s",
-)
+logging.config.dictConfig({
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "json": {
+            "()": "pythonjsonlogger.jsonlogger.JsonFormatter",
+            "format": "%(asctime)s %(levelname)s %(name)s %(message)s",
+        },
+    },
+    "handlers": {
+        "default": {
+            "class": "logging.StreamHandler",
+            "formatter": "json",
+            "stream": "ext://sys.stdout",
+        },
+    },
+    "root": {
+        "handlers": ["default"],
+        "level": "DEBUG" if settings.debug else "INFO",
+    },
+})
 
 
 async def _check_db() -> None:
@@ -108,10 +126,18 @@ def create_app() -> FastAPI:
     from app.modules.wallet.routes import router as wallet_router
     from app.modules.wallet.openbanking.webhooks import webhook_router
     from app.modules.card.routes import router as card_router
+    from app.modules.transaction.routes import router as transaction_router
     app.include_router(identity_router, prefix="/api/v1")
     app.include_router(wallet_router, prefix="/api/v1")
     app.include_router(webhook_router, prefix="/api/v1")
     app.include_router(card_router, prefix="/api/v1")
+    app.include_router(transaction_router, prefix="/api/v1")
+
+    # ── Config endpoints ──────────────────────────────────────────────────
+    @app.get("/api/v1/config/stripe", tags=["config"])
+    async def stripe_config() -> dict:  # type: ignore[type-arg]
+        """Return the Stripe publishable key for frontend Stripe.js initialisation."""
+        return {"publishable_key": settings.stripe_publishable_key}
 
     # ── Health check ──────────────────────────────────────────────────────
     @app.get("/health", tags=["ops"])

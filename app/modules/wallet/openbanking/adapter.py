@@ -92,7 +92,9 @@ class PaymentAdapter(ABC):
     ) -> InitiationResult: ...
 
     @abstractmethod
-    async def check_status(self, payment_id: str) -> PaymentStatusResult: ...
+    async def check_status(
+        self, payment_id: str, *, consent_token: str | None = None
+    ) -> PaymentStatusResult: ...
 
     @abstractmethod
     async def verify_webhook(self, body: bytes, headers: dict[str, str]) -> None:
@@ -166,7 +168,9 @@ class DevPaymentAdapter(PaymentAdapter):
             auth_link=f"https://dev.example.com/pay/{fake_id}",
         )
 
-    async def check_status(self, payment_id: str) -> PaymentStatusResult:
+    async def check_status(
+        self, payment_id: str, *, consent_token: str | None = None
+    ) -> PaymentStatusResult:
         return PaymentStatusResult(payment_id=payment_id, status="executed")
 
     async def verify_webhook(self, body: bytes, headers: dict[str, str]) -> None:

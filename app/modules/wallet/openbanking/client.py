@@ -201,7 +201,7 @@ class TrueLayerClient(PaymentAdapter):
         payment_id, auth_link = _mapper.payment_from_initiate_response(data)
         return InitiationResult(payment_id=payment_id, auth_link=auth_link)
 
-    async def check_status(self, payment_id: str) -> PaymentStatusResult:
+    async def check_status(self, payment_id: str, *, consent_token: str | None = None) -> PaymentStatusResult:
         resp = await self._request("GET", f"/v3/payments/{payment_id}")
         if resp.status_code == 404:
             raise AggregatorError(

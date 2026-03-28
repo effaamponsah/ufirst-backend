@@ -163,4 +163,15 @@ No findings recorded yet.
 
 ## Phase 11 — Security Hardening & Production Readiness
 
-No findings recorded yet.
+### 2026-03-27
+
+#### Resolved
+
+##### [DONE] [P0] Global idempotency cache could replay one caller's response into another request
+Original file: `app/core/middleware.py:46`
+
+Originally, the shared idempotency middleware keyed Redis only by the raw `Idempotency-Key` header and used a read-before-write flow. That allowed cross-route and cross-user response replay, and concurrent duplicates could both enter the handler before either cached a result. This has been addressed by scoping the cache key to method, path, query, authenticated actor, and idempotency key; fingerprinting the request payload; atomically reserving the key with Redis `SET ... NX`; returning `IdempotencyConflict` for conflicting payload reuse; and returning `DuplicateIdempotencyKey` while an identical request is still in flight. Regression coverage now verifies replay, cross-user isolation, cross-route isolation, payload conflict handling, and concurrent duplicate rejection.
+
+#### Open
+
+No findings currently open.
