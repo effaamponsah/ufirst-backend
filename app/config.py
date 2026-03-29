@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     app_base_url: str = "http://localhost:8000"
     # Frontend URL — used to redirect the browser after OAuth/bank-link callbacks
     frontend_url: str = "http://localhost:5173"
+    # Comma-separated allowed CORS origins. Defaults to frontend_url when blank.
+    # Example: https://app.ufirst.com,https://staging.ufirst.com
+    cors_origins: str = ""
 
     # Celery (defaults to redis_url when blank)
     celery_broker_url: str = ""
@@ -93,6 +96,12 @@ class Settings(BaseSettings):
     # ---------------------------------------------------------------------------
     # Derived properties
     # ---------------------------------------------------------------------------
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        if self.cors_origins.strip():
+            return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+        return [self.frontend_url]
 
     @property
     def async_database_url(self) -> str:
